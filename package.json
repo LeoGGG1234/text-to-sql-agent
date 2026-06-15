@@ -1,0 +1,43 @@
+{
+  "name": "text-to-sql-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "seed": "npx tsx scripts/seed-retail-db.ts",
+    "eval": "npx tsx eval/run-eval.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1",
+    "@ai-sdk/google": "^1",
+    "@ai-sdk/openai": "^1",
+    "@neondatabase/serverless": "^1.1.0",
+    "ai": "^4",
+    "better-auth": "^1.6.13",
+    "drizzle-orm": "^0.45.2",
+    "next": "^15",
+    "node-sql-parser": "^5.3.0",
+    "react": "^19",
+    "react-dom": "^19",
+    "recharts": "^2.15.0",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@faker-js/faker": "^9.3.0",
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/node": "^24.12.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "drizzle-kit": "^0.31.10",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.9"
+  }
+}
