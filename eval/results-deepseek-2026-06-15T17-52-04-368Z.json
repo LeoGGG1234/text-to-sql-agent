@@ -1,0 +1,122 @@
+[
+  {
+    "id": "simple_01",
+    "category": "simple",
+    "question": "How many customers do we have?",
+    "generatedSql": "SELECT COUNT(*) AS total_customers FROM customers;",
+    "refRowCount": 1,
+    "genRowCount": 1,
+    "validity": 1,
+    "execAccuracy": 1,
+    "schemaAdherence": 1,
+    "latencyMs": 4534
+  },
+  {
+    "id": "simple_02",
+    "category": "simple",
+    "question": "我们有多少个产品？",
+    "generatedSql": "SELECT COUNT(*) AS product_count FROM products;",
+    "refRowCount": 1,
+    "genRowCount": 1,
+    "validity": 1,
+    "execAccuracy": 1,
+    "schemaAdherence": 1,
+    "latencyMs": 2289
+  },
+  {
+    "id": "simple_03",
+    "category": "simple",
+    "question": "List all loyalty tiers and how many customers are in each.",
+    "generatedSql": "SELECT loyalty_tier, COUNT(*) AS customer_count\nFROM customers\nGROUP BY loyalty_tier\nORDER BY customer_count DESC;",
+    "refRowCount": 4,
+    "genRowCount": 4,
+    "validity": 1,
+    "execAccuracy": 1,
+    "schemaAdherence": 1,
+    "latencyMs": 5045
+  },
+  {
+    "id": "simple_04",
+    "category": "simple",
+    "question": "有多少订单被退货了？",
+    "generatedSql": "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status;",
+    "refRowCount": 1,
+    "genRowCount": 3,
+    "validity": 1,
+    "execAccuracy": 0,
+    "schemaAdherence": 1,
+    "latencyMs": 3902
+  },
+  {
+    "id": "agg_01",
+    "category": "aggregation",
+    "question": "What is the total revenue from completed orders?",
+    "generatedSql": "SELECT SUM(total_amount) AS total_revenue FROM orders WHERE status = 'completed';",
+    "refRowCount": 1,
+    "genRowCount": 1,
+    "validity": 1,
+    "execAccuracy": 1,
+    "schemaAdherence": 1,
+    "latencyMs": 2951
+  },
+  {
+    "id": "agg_02",
+    "category": "aggregation",
+    "question": "平均订单金额是多少？",
+    "generatedSql": "SELECT status, AVG(total_amount) AS avg_order_amount, COUNT(*) AS order_count\nFROM orders\nGROUP BY status\nORDER BY avg_order_amount DESC",
+    "refRowCount": 1,
+    "genRowCount": 3,
+    "validity": 1,
+    "execAccuracy": 0,
+    "schemaAdherence": 1,
+    "latencyMs": 5510
+  },
+  {
+    "id": "agg_03",
+    "category": "aggregation",
+    "question": "What is the highest single order total?",
+    "generatedSql": "SELECT order_id, total_amount, order_date, status\nFROM orders\nORDER BY total_amount DESC\nLIMIT 5;",
+    "refRowCount": 1,
+    "genRowCount": 5,
+    "validity": 1,
+    "execAccuracy": 0,
+    "schemaAdherence": 1,
+    "latencyMs": 4877
+  },
+  {
+    "id": "agg_04",
+    "category": "aggregation",
+    "question": "每个忠诚度等级的客户平均下了多少订单？",
+    "generatedSql": "SELECT \n  c.loyalty_tier,\n  COUNT(DISTINCT o.order_id) AS total_orders,\n  COUNT(DISTINCT c.customer_id) AS total_customers,\n  ROUND(COUNT(DISTINCT o.order_id)::numeric / COUNT(DISTINCT c.customer_id), 2) AS avg_orders_per_customer\nFROM customers c\nLEFT JOIN orders o ON c.customer_id = o.customer_id\nGROUP BY c.loyalty_tier\nORDER BY avg_orders_per_customer DESC;",
+    "refRowCount": 4,
+    "genRowCount": 4,
+    "validity": 1,
+    "execAccuracy": 0,
+    "schemaAdherence": 1,
+    "latencyMs": 7142
+  },
+  {
+    "id": "join_01",
+    "category": "join",
+    "question": "Top 5 products by total revenue.",
+    "generatedSql": "SELECT p.product_name, SUM(oi.line_total) AS total_revenue\nFROM order_items oi\nJOIN products p ON oi.product_id = p.product_id\nGROUP BY p.product_name\nORDER BY total_revenue DESC\nLIMIT 5",
+    "refRowCount": 5,
+    "genRowCount": 5,
+    "validity": 1,
+    "execAccuracy": 1,
+    "schemaAdherence": 1,
+    "latencyMs": 6517
+  },
+  {
+    "id": "join_02",
+    "category": "join",
+    "question": "每个产品类别的总销售额是多少？",
+    "generatedSql": "SELECT \n  c.category_name,\n  SUM(oi.line_total) AS total_sales\nFROM order_items oi\nJOIN products p ON oi.product_id = p.product_id\nJOIN categories c ON p.category_id = c.category_id\nGROUP BY c.category_name\nORDER BY total_sales DESC;",
+    "refRowCount": 10,
+    "genRowCount": 10,
+    "validity": 1,
+    "execAccuracy": 1,
+    "schemaAdherence": 1,
+    "latencyMs": 8049
+  }
+]
