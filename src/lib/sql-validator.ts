@@ -33,6 +33,13 @@ const PARSE_OPTS = { database: 'postgresql' } as const;
  * the raw string before parsing, catching injection tricks the AST might
  * normalize away (e.g. comments) and database-specific syntax the parser may
  * accept but we never want.
+ *
+ * NOTE: write detection (INSERT/UPDATE/DELETE/...) is NOT done here — it is
+ * enforced structurally via the parsed statement type AND the per-operation
+ * tableList check in validateSql(). A keyword regex would both miss tricks
+ * (e.g. data-modifying CTEs) and false-positive on string literals. Likewise
+ * `SELECT INTO` is caught at the AST level, not by a fragile `\binto\b` regex
+ * that would reject a legitimate literal like WHERE brand = 'A into B'.
  */
 const FORBIDDEN_PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /--/, reason: 'SQL line comments are not allowed' },
@@ -46,7 +53,6 @@ const FORBIDDEN_PATTERNS: { re: RegExp; reason: string }[] = [
     re: /\b(information_schema|pg_catalog|pg_class|pg_tables|pg_attribute|pg_roles|pg_shadow|pg_user)\b/i,
     reason: 'system catalog access is not allowed',
   },
-  { re: /\binto\s+/i, reason: 'SELECT INTO / INTO clauses are not allowed' },
 ];
 
 /**
@@ -69,10 +75,13 @@ export function validateSql(raw: string): ValidateResult {
     }
   }
 
-  // ── Parse to AST ──────────────────────────────────────────────
+  // ── Parse to AST (+ tableList for per-operation checks) ───────
   let ast;
+  let tableList: string[];
   try {
-    ast = parser.astify(sql, PARSE_OPTS);
+    const parsed = parser.parse(sql, PARSE_OPTS);
+    ast = parsed.ast;
+    tableList = parsed.tableList ?? [];
   } catch (e) {
     return {
       valid: false,
@@ -91,7 +100,10 @@ export function validateSql(raw: string): ValidateResult {
     };
   }
 
-  const stmt = statements[0] as { type?: string };
+  const stmt = statements[0] as {
+    type?: string;
+    into?: { position?: unknown } | null;
+  };
 
   // ── Must be a SELECT (CTEs report type 'select' too) ──────────
   if (stmt.type !== ALLOWED_STATEMENT_TYPE) {
@@ -102,9 +114,40 @@ export function validateSql(raw: string): ValidateResult {
     };
   }
 
-  // ── Re-serialize from the AST, then apply LIMIT ───────────────
-  // Serializing from the parsed AST guarantees the string we run is exactly
-  // what we validated — not the raw input.
+  // ── Every operation must be a SELECT ──────────────────────────
+  // The statement type alone is NOT enough: PostgreSQL allows data-modifying
+  // CTEs such as `WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t`, which
+  // node-sql-parser still reports as type "select". tableList exposes the real
+  // operation per table as "{op}::{db}::{table}" (e.g. "update::null::orders"),
+  // so we reject if anything other than a select operation is present.
+  for (const entry of tableList) {
+    const op = String(entry).split('::')[0];
+    if (op !== ALLOWED_STATEMENT_TYPE) {
+      return {
+        valid: false,
+        error: `Only read-only SELECT operations are allowed (found "${op}").`,
+        code: 'VALIDATION_ERROR',
+      };
+    }
+  }
+
+  // ── Reject SELECT INTO (writes to a new table) at the AST level ──
+  if (stmt.into && stmt.into.position) {
+    return {
+      valid: false,
+      error: 'SELECT INTO is not allowed.',
+      code: 'VALIDATION_ERROR',
+    };
+  }
+
+  // ── Clamp LIMIT on the AST, then serialize ────────────────────
+  // Editing the AST's limit node (rather than regex-patching the serialized
+  // string) handles every shape correctly: missing LIMIT, LIMIT n, LIMIT n
+  // OFFSET m, and the set-op chain (UNION) where the LIMIT binds to the last
+  // branch. Serializing from the validated AST also guarantees the string we
+  // run is exactly what we checked — not the raw input.
+  applyLimit(stmt);
+
   let cleaned: string;
   try {
     cleaned = parser.sqlify(stmt as never, PARSE_OPTS);
@@ -114,43 +157,50 @@ export function validateSql(raw: string): ValidateResult {
     cleaned = sql;
   }
 
-  cleaned = applyLimit(cleaned, stmt);
-
   return { valid: true, sql: cleaned };
 }
 
+/** A node-sql-parser LIMIT node: `{ seperator, value: [{ type, value }] }`. */
+interface LimitNode {
+  seperator?: string;
+  value: Array<{ type: string; value: number }>;
+}
+interface SelectNode {
+  limit?: LimitNode;
+  _next?: SelectNode; // set-op chain (UNION/INTERSECT/EXCEPT)
+}
+
 /**
- * Ensure the query has a LIMIT no greater than MAX_ROWS.
- * - No LIMIT          → append `LIMIT MAX_ROWS`
- * - LIMIT > MAX_ROWS  → clamp to MAX_ROWS
- * - LIMIT <= MAX_ROWS → leave as-is
+ * Ensure the query has a LIMIT no greater than MAX_ROWS, editing the AST in
+ * place so the serialized output is correct for every shape:
+ *   - No LIMIT          → append `LIMIT MAX_ROWS`
+ *   - LIMIT > MAX_ROWS  → clamp the count to MAX_ROWS (preserving OFFSET)
+ *   - LIMIT <= MAX_ROWS → leave as-is
  *
- * Uses the AST's limit node to decide, but edits the serialized string so we
- * don't depend on sqlify round-tripping the limit clause perfectly.
+ * For set-op queries (`SELECT ... UNION SELECT ...`) the LIMIT binds to the
+ * last branch, which node-sql-parser stores at the tail of the `_next` chain —
+ * so we walk to the tail before editing.
  */
-function applyLimit(serialized: string, stmt: unknown): string {
-  const limitNode = (stmt as { limit?: { value?: Array<{ value?: number }> } })
-    .limit;
-  const limitValues = limitNode?.value ?? [];
+function applyLimit(stmt: unknown): void {
+  let tail = stmt as SelectNode;
+  while (tail._next) tail = tail._next;
 
-  // node-sql-parser represents `LIMIT n` as value:[{value:n}] and
-  // `LIMIT a, b` / `LIMIT b OFFSET a` with two entries. We look at the last.
-  const existing =
-    limitValues.length > 0
-      ? Number(limitValues[limitValues.length - 1]?.value)
-      : undefined;
+  const values = tail.limit?.value ?? [];
 
-  if (existing === undefined || Number.isNaN(existing)) {
-    return `${serialized.replace(/\s*$/, '')} LIMIT ${MAX_ROWS}`;
+  // No LIMIT at all → attach the cap.
+  if (values.length === 0) {
+    tail.limit = { seperator: '', value: [{ type: 'number', value: MAX_ROWS }] };
+    return;
   }
 
-  if (existing > MAX_ROWS) {
-    // Replace the final number in a trailing LIMIT clause with the cap.
-    return serialized.replace(
-      /LIMIT\s+(\d+)(\s*)$/i,
-      `LIMIT ${MAX_ROWS}$2`,
-    );
-  }
+  // node-sql-parser shapes:
+  //   LIMIT n            → seperator ''       value:[count]
+  //   LIMIT n OFFSET m   → seperator 'offset' value:[count, offset]
+  // The count is value[0] for the OFFSET form, otherwise the last entry.
+  const countIdx = tail.limit?.seperator === 'offset' ? 0 : values.length - 1;
+  const current = Number(values[countIdx]?.value);
 
-  return serialized;
+  if (Number.isNaN(current) || current > MAX_ROWS) {
+    values[countIdx] = { type: 'number', value: MAX_ROWS };
+  }
 }

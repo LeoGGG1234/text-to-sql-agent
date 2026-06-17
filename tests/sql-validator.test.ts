@@ -162,3 +162,97 @@ describe('validateSql — AST-level defense (not just regex)', () => {
     expect(result.valid).toBe(true);
   });
 });
+
+describe('validateSql — data-modifying CTE bypass (regression)', () => {
+  // PostgreSQL allows writes inside a CTE; node-sql-parser still reports the
+  // top-level statement as type "select", so the statement-type check alone
+  // passes. These MUST be rejected — the core read-only guarantee.
+  const writeCtes = [
+    "WITH t AS (UPDATE orders SET status = 'x' RETURNING *) SELECT * FROM t",
+    'WITH t AS (DELETE FROM orders RETURNING *) SELECT * FROM t',
+    "WITH t AS (INSERT INTO orders (status) VALUES ('x') RETURNING *) SELECT * FROM t",
+  ];
+
+  for (const sql of writeCtes) {
+    it(`rejects write CTE: ${sql.slice(0, 45)}`, () => {
+      // The security contract is simply: this never reaches the database.
+      // (UPDATE/INSERT are caught by the tableList operation check;
+      // DELETE-in-CTE happens to be unparseable and is caught as a syntax
+      // error. Both paths reject — that is what matters.)
+      expect(validateSql(sql).valid).toBe(false);
+    });
+  }
+
+  it('rejects an UPDATE CTE specifically via the operation check', () => {
+    // Locks in the tableList fix: this query parses cleanly as a "select",
+    // so only the per-operation check can reject it (VALIDATION_ERROR, not a
+    // parser SYNTAX_ERROR).
+    const result = validateSql(
+      "WITH t AS (UPDATE orders SET status = 'x' RETURNING *) SELECT * FROM t",
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('still accepts a legitimate read-only CTE', () => {
+    const result = validateSql(
+      'WITH monthly AS (SELECT 1 AS n) SELECT * FROM monthly',
+    );
+    expect(result.valid).toBe(true);
+  });
+});
+
+describe('validateSql — string literals are not false-positives', () => {
+  // The old `\binto\b` regex rejected any query whose text contained "into",
+  // even inside a string literal. Write detection is now structural, so these
+  // legitimate analytical queries must pass.
+  it("accepts a literal containing the word 'into'", () => {
+    expect(
+      validateSql("SELECT * FROM products WHERE brand = 'A into B'").valid,
+    ).toBe(true);
+  });
+
+  it('still rejects an actual SELECT INTO', () => {
+    const result = validateSql('SELECT * INTO evil FROM customers');
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('validateSql — LIMIT capping across shapes', () => {
+  it('clamps LIMIT while preserving OFFSET', () => {
+    const result = validateSql('SELECT * FROM customers LIMIT 99999 OFFSET 10');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.sql).toMatch(new RegExp(`LIMIT ${MAX_ROWS}`, 'i'));
+      expect(result.sql).toMatch(/OFFSET 10/i);
+      expect(result.sql).not.toMatch(/99999/);
+    }
+  });
+
+  it('leaves a small LIMIT with OFFSET untouched', () => {
+    const result = validateSql('SELECT * FROM customers LIMIT 50 OFFSET 10');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.sql).toMatch(/LIMIT 50/i);
+      expect(result.sql).toMatch(/OFFSET 10/i);
+    }
+  });
+
+  it('clamps the LIMIT on a UNION query', () => {
+    const result = validateSql('SELECT 1 AS n UNION SELECT 2 LIMIT 99999');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.sql).toMatch(new RegExp(`LIMIT ${MAX_ROWS}`, 'i'));
+      expect(result.sql).not.toMatch(/99999/);
+    }
+  });
+
+  it('appends a LIMIT to a UNION query that has none', () => {
+    const result = validateSql('SELECT 1 AS n UNION SELECT 2');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.sql).toMatch(new RegExp(`LIMIT ${MAX_ROWS}`, 'i'));
+    }
+  });
+});
