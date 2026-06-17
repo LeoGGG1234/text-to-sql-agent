@@ -20,13 +20,13 @@ export const DEV_USER_ID = 'dev-00000000-0000-4000-a000-000000000001';
 export const DEV_USER_EMAIL = 'dev@localhost';
 
 export function isDevMode(): boolean {
-  return process.env.DEV_MODE === 'true';
+  return process.env.NODE_ENV !== 'production' && process.env.DEV_MODE === 'true';
 }
 
 // ─── Guest mode (production demo) ─────────────────────────────
 
 const GUEST_USER_ID = 'guest-00000000-0000-4000-a000-000000000001';
-const GUEST_USER_EMAIL = 'guest@balatro-agent.demo';
+const GUEST_USER_EMAIL = 'guest@text-to-sql.demo';
 
 export function isGuestMode(): boolean {
   return process.env.ALLOW_GUEST === 'true';

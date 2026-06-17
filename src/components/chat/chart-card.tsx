@@ -45,6 +45,8 @@ const TOOLTIP_STYLE = {
   fontSize: 12,
   color: '#e4e4e7',
 };
+const TOOLTIP_LABEL_STYLE = { color: '#a1a1aa', fontWeight: 500 };
+const TOOLTIP_ITEM_STYLE = { color: '#e4e4e7' };
 
 export function ChartCard({ result }: { result: unknown }) {
   const spec = (result as { chartSpec?: ChartSpec })?.chartSpec;
@@ -77,7 +79,7 @@ function renderChart(spec: ChartSpec) {
           <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
           <XAxis dataKey="label" tick={AXIS_STYLE} stroke="#3f3f46" />
           <YAxis tick={AXIS_STYLE} stroke="#3f3f46" />
-          <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ stroke: '#52525b' }} />
+          <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} cursor={{ stroke: '#52525b' }} />
           <Line
             type="monotone"
             dataKey="value"
@@ -106,7 +108,7 @@ function renderChart(spec: ChartSpec) {
               <Cell key={i} fill={COLORS[i % COLORS.length]} />
             ))}
           </Pie>
-          <Tooltip contentStyle={TOOLTIP_STYLE} />
+          <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} />
           <Legend wrapperStyle={{ fontSize: 11, color: '#a1a1aa' }} />
         </PieChart>
       );
@@ -118,7 +120,7 @@ function renderChart(spec: ChartSpec) {
           <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
           <XAxis dataKey="label" tick={AXIS_STYLE} stroke="#3f3f46" />
           <YAxis tick={AXIS_STYLE} stroke="#3f3f46" />
-          <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#27272a' }} />
+          <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} cursor={{ fill: '#27272a' }} />
           <Bar dataKey="value" name={spec.yAxis} radius={[3, 3, 0, 0]}>
             {spec.data.map((_, i) => (
               <Cell key={i} fill={COLORS[i % COLORS.length]} />

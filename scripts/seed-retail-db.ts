@@ -397,16 +397,21 @@ async function seedOrders(customers: Customer[], products: Product[], orderCount
 
 async function createReadonlyRole() {
   console.log('▸ Creating read-only role...');
-  // Create the role if it does not exist, then (re)set its password.
+
+  // READONLY_USER / READONLY_PASSWORD are hardcoded constants (not user input),
+  // so there is no SQL-injection risk. We still use PostgreSQL's format() with
+  // %I (identifier) and %L (literal) escaping as defense-in-depth — in case
+  // someone later refactors these into env vars or CLI args.
   await sql.query(`
     DO $$
     BEGIN
       IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${READONLY_USER}') THEN
-        CREATE ROLE ${READONLY_USER} LOGIN PASSWORD '${READONLY_PASSWORD}';
+        EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', '${READONLY_USER}', '${READONLY_PASSWORD}');
+      ELSE
+        EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '${READONLY_USER}', '${READONLY_PASSWORD}');
       END IF;
     END
     $$;`);
-  await sql.query(`ALTER ROLE ${READONLY_USER} WITH LOGIN PASSWORD '${READONLY_PASSWORD}'`);
 
   await sql.query(`GRANT USAGE ON SCHEMA public TO ${READONLY_USER}`);
   await sql.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${READONLY_USER}`);

@@ -38,6 +38,7 @@ export const renderChart = tool({
         }),
       )
       .min(1)
+      .max(100)
       .describe('The points to plot, already aggregated from the query result.'),
   }),
 

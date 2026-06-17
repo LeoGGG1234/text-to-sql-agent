@@ -33,14 +33,6 @@ export function resultSetsMatch(
   if (a.length !== b.length) return false;
   if (a.length === 0) return true;
 
-  const normRow = (row: Record<string, unknown>): string => {
-    const keys = Object.keys(row).sort();
-    return keys
-      .map((k) => `${normValue(row[k])}`)
-      .sort()
-      .join('|');
-  };
-
   // Build multisets of normalized VALUE bags (ignore column names, since the
   // agent may alias differently than the reference).
   const bagA = a.map((r) => valueBag(r)).sort();
