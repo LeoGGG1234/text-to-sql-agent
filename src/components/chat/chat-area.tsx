@@ -12,6 +12,14 @@ const EXAMPLE_QUESTIONS = [
   { zh: '哪个产品类别的退货率最高？', en: 'Which product category has the highest return rate?' },
 ];
 
+interface ProviderOption {
+  id: string;
+  label: string;
+  defaultModel: string;
+}
+
+const DEFAULT_PROVIDER = 'deepseek';
+
 interface ChatAreaProps {
   /** Conversation ID — null for new (not yet created) conversation */
   conversationId: string | null;
@@ -23,6 +31,33 @@ export function ChatArea({ conversationId }: ChatAreaProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [initialMessages, setInitialMessages] = useState<Message[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // ─── Provider switching ────────────────────────────────────
+  const [providers, setProviders] = useState<ProviderOption[]>([]);
+  const [provider, setProvider] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('tts-provider') ?? DEFAULT_PROVIDER;
+    }
+    return DEFAULT_PROVIDER;
+  });
+
+  // Fetch available providers on mount
+  useEffect(() => {
+    fetch('/api/providers')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.providers?.length > 0) {
+          setProviders(data.providers);
+        }
+      })
+      .catch(() => {}); // silent — selector just won't show
+  }, []);
+
+  const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const next = e.target.value;
+    setProvider(next);
+    localStorage.setItem('tts-provider', next);
+  };
 
   // Load messages when conversationId changes
   useEffect(() => {
@@ -72,6 +107,7 @@ export function ChatArea({ conversationId }: ChatAreaProps) {
       id: conversationId ?? undefined,
       body: {
         conversationId,
+        provider,
       },
     });
 
@@ -212,6 +248,20 @@ export function ChatArea({ conversationId }: ChatAreaProps) {
           className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 transition"
           disabled={isLoading}
         />
+        {providers.length > 1 && (
+          <select
+            value={provider}
+            onChange={handleProviderChange}
+            className="bg-zinc-800 border border-zinc-700 rounded-lg px-2.5 py-2.5 text-xs text-zinc-300 focus:outline-none focus:border-indigo-500 transition cursor-pointer"
+            title="切换 AI 供应商"
+          >
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           type="submit"
           disabled={isLoading || !input.trim()}
