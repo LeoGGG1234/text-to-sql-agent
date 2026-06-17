@@ -30,10 +30,13 @@ npm run eval         # 端到端 SQL 准确率评测（需 dev server + RETAIL_D
 ## 三层 SQL 安全防御（不可破坏）
 
 1. **DB 角色** `retail_readonly`：仅 SELECT 授权 + `statement_timeout=5s`
-2. **AST 校验**：单条 SELECT、拒绝写/DDL/注释/多语句/系统表、强制 LIMIT 1000
-3. **JS 超时兜底**
+2. **AST 校验**（`sql-validator.ts`）：单条语句、`type==='select'`、拒绝注释/多语句/系统表/危险函数。
+   关键：仅判 `type==='select'` **不够** —— 数据修改 CTE（`WITH t AS (UPDATE ... RETURNING *) SELECT ...`）
+   也报 `select`，故必须额外校验 `tableList` 里**每个操作**都是 `select`。写检测一律走 AST，不用关键词正则
+   （会误杀字面量、漏 CTE）。LIMIT 在 AST 上钳制（处理 OFFSET-only / 负数 / UNION），`sqlify` 失败则 fail-closed。
+3. **JS 超时兜底**（`sql-executor.ts`，DB timeout 之上的备份，不能真正中断查询）
 
-修改 SQL 相关代码后必须 `npm test` 确保 34 个安全测试全绿。
+修改 SQL 相关代码后必须 `npm test` 确保全部安全测试全绿（含 CTE 绕过 / LIMIT 边界回归用例）。
 
 ## Key Conventions
 
