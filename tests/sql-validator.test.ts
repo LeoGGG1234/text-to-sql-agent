@@ -255,4 +255,43 @@ describe('validateSql — LIMIT capping across shapes', () => {
       expect(result.sql).toMatch(new RegExp(`LIMIT ${MAX_ROWS}`, 'i'));
     }
   });
+
+  it('caps an OFFSET-only query (no LIMIT) and preserves the offset', () => {
+    // Regression: `OFFSET n` with no LIMIT parses as { seperator:'offset',
+    // value:[n] } where n is the OFFSET, not a count. The cap must still be
+    // injected — otherwise the whole table can be returned.
+    const result = validateSql('SELECT * FROM customers OFFSET 100');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.sql).toMatch(new RegExp(`LIMIT ${MAX_ROWS}`, 'i'));
+      expect(result.sql).toMatch(/OFFSET 100/i);
+    }
+  });
+
+  it('clamps a negative LIMIT to the cap', () => {
+    // Regression: the old clamp only checked `> MAX_ROWS`, so `LIMIT -100`
+    // passed through and PostgreSQL rejects a negative LIMIT at runtime.
+    const result = validateSql('SELECT * FROM customers LIMIT -100');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.sql).toMatch(new RegExp(`LIMIT ${MAX_ROWS}`, 'i'));
+      expect(result.sql).not.toMatch(/-100/);
+    }
+  });
+
+  it('caps LIMIT ALL to the row cap', () => {
+    const result = validateSql('SELECT * FROM customers LIMIT ALL');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.sql).toMatch(new RegExp(`LIMIT ${MAX_ROWS}`, 'i'));
+    }
+  });
+
+  it('leaves LIMIT 0 untouched (a valid, safe cap)', () => {
+    const result = validateSql('SELECT * FROM customers LIMIT 0');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.sql).toMatch(/LIMIT 0\b/i);
+    }
+  });
 });

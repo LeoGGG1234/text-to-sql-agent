@@ -152,18 +152,29 @@ export function validateSql(raw: string): ValidateResult {
   try {
     cleaned = parser.sqlify(stmt as never, PARSE_OPTS);
   } catch {
-    // Fall back to the trimmed input if sqlify fails for an exotic-but-valid
-    // construct; the AST checks above already passed.
-    cleaned = sql;
+    // Fail closed: the LIMIT cap lives only on the AST we just edited, so we
+    // cannot fall back to the raw input (it has no cap) without dropping the
+    // row-limit guarantee. If we can't serialize the validated+capped AST,
+    // reject rather than run an uncapped query.
+    return {
+      valid: false,
+      error: 'Could not safely process this query. Please simplify it.',
+      code: 'VALIDATION_ERROR',
+    };
   }
 
   return { valid: true, sql: cleaned };
 }
 
-/** A node-sql-parser LIMIT node: `{ seperator, value: [{ type, value }] }`. */
+/** A node-sql-parser LIMIT value entry: `{ type, value }`. */
+interface LimitValue {
+  type: string;
+  value: number;
+}
+/** A node-sql-parser LIMIT node: `{ seperator, value: [...] }`. */
 interface LimitNode {
   seperator?: string;
-  value: Array<{ type: string; value: number }>;
+  value: LimitValue[];
 }
 interface SelectNode {
   limit?: LimitNode;
@@ -171,36 +182,59 @@ interface SelectNode {
 }
 
 /**
- * Ensure the query has a LIMIT no greater than MAX_ROWS, editing the AST in
- * place so the serialized output is correct for every shape:
- *   - No LIMIT          → append `LIMIT MAX_ROWS`
- *   - LIMIT > MAX_ROWS  → clamp the count to MAX_ROWS (preserving OFFSET)
- *   - LIMIT <= MAX_ROWS → leave as-is
+ * Rewrite the query's LIMIT so it always has a positive count no greater than
+ * MAX_ROWS, editing the AST in place. The output is correct for every shape:
+ *   - No LIMIT            → `LIMIT MAX_ROWS`
+ *   - OFFSET but no LIMIT → `LIMIT MAX_ROWS OFFSET m`  (preserve the offset)
+ *   - LIMIT > MAX_ROWS    → clamp the count to MAX_ROWS (preserve offset)
+ *   - LIMIT < 0 / non-num → clamp the count to MAX_ROWS
+ *   - 0 <= LIMIT <= cap   → leave as-is
+ *
+ * Why this is fiddly: node-sql-parser packs LIMIT and OFFSET into one node and
+ * the value array is positional. The critical trap is `OFFSET m` with NO LIMIT,
+ * which parses as `{ seperator: 'offset', value: [m] }` — that lone entry is the
+ * OFFSET, not a count, so treating it as the count silently drops the row cap.
+ * We therefore separate the count node from the offset node by shape, rather
+ * than indexing.
  *
  * For set-op queries (`SELECT ... UNION SELECT ...`) the LIMIT binds to the
- * last branch, which node-sql-parser stores at the tail of the `_next` chain —
- * so we walk to the tail before editing.
+ * last branch, which the parser stores at the tail of the `_next` chain — so we
+ * walk to the tail before editing.
  */
 function applyLimit(stmt: unknown): void {
   let tail = stmt as SelectNode;
   while (tail._next) tail = tail._next;
 
-  const values = tail.limit?.value ?? [];
+  const limit = tail.limit;
+  const hasOffsetSep = limit?.seperator === 'offset';
+  const values = limit?.value ?? [];
 
-  // No LIMIT at all → attach the cap.
-  if (values.length === 0) {
-    tail.limit = { seperator: '', value: [{ type: 'number', value: MAX_ROWS }] };
-    return;
+  // Separate count from offset by the node's documented shapes:
+  //   ''      []              → no limit, no offset
+  //   ''      [count]         → LIMIT count
+  //   'offset'[offset]        → OFFSET offset (NO count present)  ← the trap
+  //   'offset'[count, offset] → LIMIT count OFFSET offset
+  let countNode: LimitValue | undefined;
+  let offsetNode: LimitValue | undefined;
+  if (hasOffsetSep) {
+    if (values.length >= 2) {
+      countNode = values[0];
+      offsetNode = values[1];
+    } else {
+      offsetNode = values[0]; // lone entry is the OFFSET, not a count
+    }
+  } else {
+    countNode = values.length > 0 ? values[values.length - 1] : undefined;
   }
 
-  // node-sql-parser shapes:
-  //   LIMIT n            → seperator ''       value:[count]
-  //   LIMIT n OFFSET m   → seperator 'offset' value:[count, offset]
-  // The count is value[0] for the OFFSET form, otherwise the last entry.
-  const countIdx = tail.limit?.seperator === 'offset' ? 0 : values.length - 1;
-  const current = Number(values[countIdx]?.value);
+  const current = countNode ? Number(countNode.value) : NaN;
+  const needsCap = Number.isNaN(current) || current < 0 || current > MAX_ROWS;
+  const cappedCount: LimitValue = {
+    type: 'number',
+    value: needsCap ? MAX_ROWS : current,
+  };
 
-  if (Number.isNaN(current) || current > MAX_ROWS) {
-    values[countIdx] = { type: 'number', value: MAX_ROWS };
-  }
+  tail.limit = offsetNode
+    ? { seperator: 'offset', value: [cappedCount, offsetNode] }
+    : { seperator: '', value: [cappedCount] };
 }

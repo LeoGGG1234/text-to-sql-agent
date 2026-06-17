@@ -92,6 +92,12 @@ export function getModel(
 ): LanguageModel {
   const p = provider ?? DEFAULT_PROVIDER;
   const info = PROVIDERS[p];
+  // Guard against an unknown id reaching us (e.g. a stale value persisted in
+  // the client). Without this, `info.defaultModel` below throws an opaque
+  // TypeError instead of a clear, catchable error.
+  if (!info) {
+    throw new Error(`Unknown provider: ${p}`);
+  }
   const m = modelId ?? info.defaultModel;
   const key = cacheKey(p, m);
 
@@ -160,4 +166,12 @@ export function getAvailableProviders(): ProviderId[] {
 export function isProviderAvailable(provider: ProviderId): boolean {
   const info = PROVIDERS[provider];
   return !!process.env[info.envVar];
+}
+
+/**
+ * Type guard: is `value` a known provider id? Use this to validate untrusted
+ * input (request bodies, persisted client state) before passing it to getModel.
+ */
+export function isValidProvider(value: unknown): value is ProviderId {
+  return typeof value === 'string' && value in PROVIDERS;
 }

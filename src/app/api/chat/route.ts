@@ -8,7 +8,12 @@
  */
 
 import { streamText, type CoreMessage } from 'ai';
-import { getModel, DEFAULT_PROVIDER, type ProviderId } from '@/lib/providers';
+import {
+  getModel,
+  isValidProvider,
+  DEFAULT_PROVIDER,
+  type ProviderId,
+} from '@/lib/providers';
 import { getSystemPrompt } from '@/lib/prompts';
 import { checkRateLimit, rateLimitHeaders } from '@/lib/rate-limit';
 import { getSession } from '@/lib/auth-helpers';
@@ -45,7 +50,6 @@ export async function POST(req: Request) {
     const body = await req.json();
 
     const messages: CoreMessage[] = body.messages ?? [];
-    const provider: ProviderId = body.provider ?? DEFAULT_PROVIDER;
     const modelId: string | undefined = body.model;
     const promptVariant: string | undefined = body.promptVariant;
     const conversationId: string | undefined = body.conversationId;
@@ -56,6 +60,21 @@ export async function POST(req: Request) {
         { error: 'messages must be a non-empty array' },
         { status: 400 },
       );
+    }
+
+    // Resolve the provider from the (untrusted) body. A missing value falls
+    // back to the default; an unrecognized value is a client error (400) — not
+    // a 500 from getModel choking on an unknown id (e.g. a stale persisted
+    // choice whose API key was since removed).
+    let provider: ProviderId = DEFAULT_PROVIDER;
+    if (body.provider !== undefined && body.provider !== null) {
+      if (!isValidProvider(body.provider)) {
+        return Response.json(
+          { error: `Unknown provider: ${String(body.provider)}` },
+          { status: 400 },
+        );
+      }
+      provider = body.provider;
     }
 
     // ─── Find or create conversation ────────────────────────
