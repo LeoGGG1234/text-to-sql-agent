@@ -273,8 +273,22 @@ export async function POST(req: Request) {
     `SELECT EXISTS (SELECT FROM pg_roles WHERE rolname = 'userdata_readonly') AS exists`,
   );
   if (!(roleExists as { exists: boolean }).exists) {
+    const roPassword = process.env.USERDATA_READONLY_PASSWORD;
+    if (!roPassword) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error(
+          'USERDATA_READONLY_PASSWORD is required in production. ' +
+            'Set it to a strong random password matching your USERDATA_DATABASE_URL.',
+        );
+      }
+      console.warn(
+        '[upload] USERDATA_READONLY_PASSWORD not set — falling back to dev default. ' +
+          'Set this env var before deploying to production.',
+      );
+    }
+    const password = roPassword || 'userdata_demo_pw';
     await sql.query(
-      `CREATE ROLE userdata_readonly WITH LOGIN PASSWORD '${process.env.USERDATA_READONLY_PASSWORD ?? 'userdata_demo_pw'}'`,
+      `CREATE ROLE userdata_readonly WITH LOGIN PASSWORD '${password.replace(/'/g, "''")}'`,
     );
     await sql.query(`GRANT USAGE ON SCHEMA ${UPLOAD_SCHEMA} TO userdata_readonly`);
     await sql.query(

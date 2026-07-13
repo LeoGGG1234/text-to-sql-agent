@@ -217,6 +217,21 @@ describe('validateSql — string literals are not false-positives', () => {
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.code).toBe('VALIDATION_ERROR');
   });
+
+  it('accepts a semicolon inside a string literal (regression)', () => {
+    // `;\s*\S` regex must not see inside string literals
+    expect(
+      validateSql("SELECT * FROM products WHERE name LIKE '%; foo'").valid,
+    ).toBe(true);
+  });
+
+  it('still rejects a real multi-statement (semicolon outside strings)', () => {
+    // The semicolon outside the string is structural, not literal content
+    const result = validateSql(
+      "SELECT * FROM products WHERE name = 'hello'; DROP TABLE products",
+    );
+    expect(result.valid).toBe(false);
+  });
 });
 
 describe('validateSql — LIMIT capping across shapes', () => {

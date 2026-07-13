@@ -51,7 +51,7 @@ export function DataSourceManager({ open, onClose, onSelect, selectedId, onViewD
     setDeleting(id);
     const res = await fetch(`/api/data-sources/${id}`, { method: 'DELETE' });
     if (res.ok) {
-      if (selectedId === id) onSelect;
+      if (selectedId === id) onSelect('', 'Retail Demo');
       setDataSources((prev) => prev.filter((d) => d.id !== id));
       if (previewId === id) setPreviewId(null);
     }

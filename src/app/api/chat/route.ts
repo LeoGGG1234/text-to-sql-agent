@@ -142,15 +142,19 @@ export async function POST(req: Request) {
 
     // Sync frontend dataSourceId to DB (covers new conversations + mid-conversation switches).
     if (convId && frontendDataSourceId !== undefined) {
+      // Normalize both values to null for comparison: the frontend sends ""
+      // for "no data source selected" while the DB stores NULL — without this
+      // normalization every request would fire a spurious UPDATE (null ← "").
+      const nextDsId = frontendDataSourceId || null;
       const [conv] = await db
         .select({ dataSourceId: schema.chatConversations.dataSourceId })
         .from(schema.chatConversations)
         .where(eq(schema.chatConversations.id, convId))
         .limit(1);
-      if (conv && conv.dataSourceId !== frontendDataSourceId) {
+      if (conv && (conv.dataSourceId || null) !== nextDsId) {
         await db
           .update(schema.chatConversations)
-          .set({ dataSourceId: frontendDataSourceId || null, updatedAt: new Date() })
+          .set({ dataSourceId: nextDsId, updatedAt: new Date() })
           .where(eq(schema.chatConversations.id, convId));
       }
     }

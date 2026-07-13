@@ -41,6 +41,31 @@ const PARSE_OPTS = { database: 'postgresql' } as const;
  * `SELECT INTO` is caught at the AST level, not by a fragile `\binto\b` regex
  * that would reject a legitimate literal like WHERE brand = 'A into B'.
  */
+/**
+ * Strip single-quoted string literals from SQL so regex-based safety checks
+ * don't false-positive on content inside strings (e.g. a semicolon in
+ * `WHERE name = 'foo; bar'`).
+ *
+ * Handles PostgreSQL-style escaped quotes (`''` inside a string).
+ */
+function stripStringLiterals(sql: string): string {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (ch === "'") {
+      if (inString && sql[i + 1] === "'") {
+        i++; // skip escaped quote
+        continue;
+      }
+      inString = !inString;
+      continue;
+    }
+    if (!inString) out += ch;
+  }
+  return out;
+}
+
 const FORBIDDEN_PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /--/, reason: 'SQL line comments are not allowed' },
   { re: /\/\*/, reason: 'SQL block comments are not allowed' },
@@ -69,8 +94,11 @@ export function validateSql(raw: string): ValidateResult {
   }
 
   // ── Defensive string checks (before parsing) ──────────────────
+  // Run regexes against the *structural* SQL (string literals stripped)
+  // so content like `'foo; bar'` doesn't trigger false positives.
+  const structuralSql = stripStringLiterals(sql);
   for (const { re, reason } of FORBIDDEN_PATTERNS) {
-    if (re.test(sql)) {
+    if (re.test(structuralSql)) {
       return { valid: false, error: reason, code: 'VALIDATION_ERROR' };
     }
   }
