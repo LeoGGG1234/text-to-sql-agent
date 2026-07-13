@@ -23,11 +23,13 @@ const DEFAULT_PROVIDER = 'deepseek';
 interface ChatAreaProps {
   /** Conversation ID — null for new (not yet created) conversation */
   conversationId: string | null;
+  /** Active data source ID — null means use retail demo */
+  dataSourceId?: string | null;
   /** Callback when the first message is sent (conversation needs creation) */
   onConversationCreated?: (id: string) => void;
 }
 
-export function ChatArea({ conversationId }: ChatAreaProps) {
+export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [initialMessages, setInitialMessages] = useState<Message[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -108,6 +110,7 @@ export function ChatArea({ conversationId }: ChatAreaProps) {
       body: {
         conversationId,
         provider,
+        dataSourceId,
       },
     });
 

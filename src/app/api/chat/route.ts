@@ -20,6 +20,15 @@ import { getSession } from '@/lib/auth-helpers';
 import { db, schema } from '@/db';
 import { eq } from 'drizzle-orm';
 import { buildTools } from '@/tools';
+import {
+  SCHEMA_TABLES,
+  RELATIONSHIPS,
+  buildSchemaPromptText,
+  type TableDef,
+} from '@/lib/schema-description';
+import type { SchemaJson, QualityProfile } from '@/lib/data-sources/types';
+import { buildQualityNote, buildTableQualityNote } from '@/lib/data-sources/quality-analyzer';
+import type { ExecOptions } from '@/lib/sql-executor';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60; // seconds (Hobby plan limit)
@@ -53,6 +62,7 @@ export async function POST(req: Request) {
     const modelId: string | undefined = body.model;
     const promptVariant: string | undefined = body.promptVariant;
     const conversationId: string | undefined = body.conversationId;
+    const frontendDataSourceId: string | undefined = body.dataSourceId ?? undefined;
 
     // Validate
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -100,6 +110,7 @@ export async function POST(req: Request) {
         id: convId,
         userId,
         title: null,
+        dataSourceId: frontendDataSourceId ?? null,
         createdAt: now,
         updatedAt: now,
       });
@@ -124,16 +135,100 @@ export async function POST(req: Request) {
       });
     }
 
+    // ─── Resolve active data source ─────────────────────────
+    let resolvedTables: TableDef[] = SCHEMA_TABLES;
+    let resolvedRelationships: string[] = RELATIONSHIPS;
+    let execOptions: ExecOptions | undefined;
+
+    // Sync frontend dataSourceId to DB (covers new conversations + mid-conversation switches).
+    if (convId && frontendDataSourceId !== undefined) {
+      const [conv] = await db
+        .select({ dataSourceId: schema.chatConversations.dataSourceId })
+        .from(schema.chatConversations)
+        .where(eq(schema.chatConversations.id, convId))
+        .limit(1);
+      if (conv && conv.dataSourceId !== frontendDataSourceId) {
+        await db
+          .update(schema.chatConversations)
+          .set({ dataSourceId: frontendDataSourceId || null, updatedAt: new Date() })
+          .where(eq(schema.chatConversations.id, convId));
+      }
+    }
+
+    if (convId) {
+      const effectiveDsId = frontendDataSourceId ?? (
+        await db
+          .select({ dataSourceId: schema.chatConversations.dataSourceId })
+          .from(schema.chatConversations)
+          .where(eq(schema.chatConversations.id, convId))
+          .limit(1)
+          .then(([r]) => r?.dataSourceId ?? null)
+      );
+
+      if (effectiveDsId) {
+        const [ds] = await db
+          .select({ type: schema.dataSources.type, config: schema.dataSources.config, schemaJson: schema.dataSources.schemaJson })
+          .from(schema.dataSources)
+          .where(eq(schema.dataSources.id, effectiveDsId))
+          .limit(1);
+
+        if (ds) {
+          const schemaJson = ds.schemaJson as unknown as SchemaJson | null;
+          const qualityProfile = schemaJson?.qualityProfile as QualityProfile | undefined;
+          if (schemaJson?.tables) {
+            // Convert DiscoveredTable[] → TableDef[] for prompt + getSchema tool.
+            resolvedTables = schemaJson.tables.map((t) => {
+              const tableQualityNote =
+                qualityProfile?.table
+                  ? buildTableQualityNote(qualityProfile.table)
+                  : '';
+              return {
+                name: `userdata."${t.name}"`,
+                description:
+                  `${t.displayName}. ${t.rowCount} rows. All columns are TEXT — use CAST for math/dates.` +
+                  (tableQualityNote ? ` ${tableQualityNote}` : ''),
+                columns: t.columns.map((c) => {
+                  const colProfile = qualityProfile?.columns?.[c.name];
+                  const qualityNote = buildQualityNote(c, colProfile);
+                  return {
+                    name: c.name,
+                    type: 'TEXT',
+                    nullable: c.nullable,
+                    description:
+                      `${c.displayName} (semantic: ${c.semanticType}). ${c.hint ?? ''}` +
+                      qualityNote,
+                  };
+                }),
+                foreignKeys: [],
+              };
+            });
+            resolvedRelationships = schemaJson.relationships;
+          }
+
+          // Set exec options for user-uploaded data sources.
+          if (ds.type === 'upload') {
+            const userdataUrl = process.env.USERDATA_DATABASE_URL;
+            if (userdataUrl) {
+              execOptions = {
+                connectionString: userdataUrl,
+                searchPath: 'userdata',
+              };
+            }
+          }
+        }
+      }
+    }
+
     // ─── Stream response ────────────────────────────────────
     const model = getModel(provider, modelId);
-    const systemPrompt = getSystemPrompt(promptVariant);
+    const schemaText = buildSchemaPromptText(resolvedTables, resolvedRelationships);
+    const systemPrompt = getSystemPrompt(promptVariant, schemaText);
 
     const result = streamText({
       model,
       messages,
       system: systemPrompt,
-      // Fresh tool set per request (runSql carries a per-turn retry counter).
-      tools: buildTools(),
+      tools: buildTools({ execOptions, schemaTables: resolvedTables, schemaRelationships: resolvedRelationships }),
       maxSteps: 5,
       onFinish: async (event) => {
         // Save assistant message

@@ -6,6 +6,7 @@
  *   chat_conversations                     — Conversation sessions
  *   chat_messages                          — Individual messages (AI SDK v4 parts)
  *   usage_records                          — Token usage tracking
+ *   data_sources                           — User-configured data sources (upload/external)
  */
 
 import {
@@ -81,12 +82,16 @@ export const chatConversations = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     title: text('title'),
+    dataSourceId: text('data_source_id').references(() => dataSources.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   (table) => ({
     userIdIdx: index('chat_conv_user_idx').on(table.userId),
     updatedAtIdx: index('chat_conv_updated_idx').on(table.updatedAt.desc()),
+    dsIdx: index('chat_conv_ds_idx').on(table.dataSourceId),
   }),
 );
 
@@ -129,5 +134,26 @@ export const usageRecords = pgTable(
   (table) => ({
     userIdIdx: index('usage_user_idx').on(table.userId),
     createdAtIdx: index('usage_created_idx').on(table.createdAt),
+  }),
+);
+
+// ─── Data Sources ──────────────────────────────────────────────
+
+export const dataSources = pgTable(
+  'data_sources',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(), // user-facing label
+    type: text('type').notNull(), // 'upload' | 'external'
+    config: jsonb('config').notNull().$type<Record<string, unknown>>(), // UploadConfig | ExternalConfig
+    schemaJson: jsonb('schema_json').$type<Record<string, unknown>>(), // SchemaJson (nullable — populated after upload)
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: index('ds_user_idx').on(table.userId),
   }),
 );

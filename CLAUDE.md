@@ -38,6 +38,15 @@ npm run eval         # 端到端 SQL 准确率评测（需 dev server + RETAIL_D
 
 修改 SQL 相关代码后必须 `npm test` 确保全部安全测试全绿（含 CTE 绕过 / LIMIT 边界回归用例）。
 
+## Data Upload Pipeline
+
+- `src/app/api/data-sources/upload/route.ts` — CSV/Excel upload: parse → normalize → trim → detect → analyze → INSERT
+- `src/lib/data-sources/type-detector.ts` — Full-width normalization + semantic type detection (80% threshold, 100-row sample)
+- `src/lib/data-sources/quality-analyzer.ts` — Full-scan quality analysis (NULL-like, type mismatch, duplicates, fuzzy dup)
+- Default limits: **200k rows**, **80 MB** files, **120s** timeout
+- Configurable via env vars: `UPLOAD_MAX_FILE_MB`, `UPLOAD_MAX_ROWS`, `UPLOAD_BATCH_SIZE`
+- All uploaded data goes into `userdata` schema; queried via `userdata_readonly` role (`statement_timeout=5s`)
+
 ## Key Conventions
 
 - TypeScript strict，禁止 `any`（route.ts 持久化层除外，已有注释说明）

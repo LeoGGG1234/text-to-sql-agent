@@ -5,6 +5,9 @@ import { useRouter } from 'next/navigation';
 import { useSession, signOut } from '@/lib/auth-client';
 import { Sidebar } from '@/components/chat/sidebar';
 import { ChatArea } from '@/components/chat/chat-area';
+import { DataSourceManager } from '@/components/data-sources/data-source-manager';
+import { DataTablePanel } from '@/components/data-sources/data-table-panel';
+import { DataSourceIndicator } from '@/components/chat/data-source-indicator';
 
 export interface ConversationSummary {
   id: string;
@@ -50,6 +53,15 @@ export default function Home() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Data source state
+  const [dsPanelOpen, setDsPanelOpen] = useState(false);
+  const [activeDataSourceId, setActiveDataSourceId] = useState<string | null>(null);
+  const [activeDataSourceName, setActiveDataSourceName] = useState<string | null>(null);
+
+  // Data table panel state
+  const [dtPanelOpen, setDtPanelOpen] = useState(false);
+  const [dtDataSourceId, setDtDataSourceId] = useState<string>('');
+
   // ─── Auth guard (dev mode > guest mode > login) ────────
   useEffect(() => {
     if (!isPending && !session) {
@@ -91,11 +103,30 @@ export default function Home() {
     }
   }, [effectiveSession, loadConversations]);
 
+  // ─── Load active conversation's data source on switch ─────
+  useEffect(() => {
+    if (!activeId) {
+      setActiveDataSourceId(null);
+      setActiveDataSourceName(null);
+      return;
+    }
+    fetch(`/api/conversations/${activeId}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setActiveDataSourceId(data.dataSourceId ?? null);
+        // Derive name from conversations list
+        // The name will be set when the DataSourceManager fetches sources
+      })
+      .catch(() => {});
+  }, [activeId]);
+
   // ─── Handlers ───────────────────────────────────────────
 
   const handleNew = () => {
     setActiveId(null);
-    setSidebarOpen(false); // close mobile sidebar
+    setSidebarOpen(false);
+    setActiveDataSourceId(null);
+    setActiveDataSourceName(null);
   };
 
   const handleSelect = (id: string) => {
@@ -120,11 +151,27 @@ export default function Home() {
     loadConversations();
   };
 
+  const handleDataSourceSelect = async (dsId: string, name: string) => {
+    // dsId === '' means "use retail demo" (no data source)
+    const newId = dsId || null;
+
+    // Persist to conversation if one is active
+    if (activeId) {
+      await fetch(`/api/conversations/${activeId}/data-source`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataSourceId: newId }),
+      });
+    }
+
+    setActiveDataSourceId(newId);
+    setActiveDataSourceName(newId ? name : null);
+  };
+
   const handleLogout = async () => {
     setLoggingOut(true);
     await signOut();
     if (bypassSession) {
-      // In dev/guest mode just reload — the bypass session kicks back in
       setBypassSession(null);
       setBypassCheckDone(false);
     } else {
@@ -145,11 +192,30 @@ export default function Home() {
     );
   }
 
-  if (!effectiveSession) return null; // Will redirect
+  if (!effectiveSession) return null;
 
   // ─── Render ─────────────────────────────────────────────
   return (
     <div className="flex h-screen bg-zinc-950">
+      {/* Data Source Manager (slide-over panel) */}
+      <DataSourceManager
+        open={dsPanelOpen}
+        onClose={() => setDsPanelOpen(false)}
+        onSelect={handleDataSourceSelect}
+        selectedId={activeDataSourceId}
+        onViewData={(dsId) => {
+          setDtDataSourceId(dsId);
+          setDtPanelOpen(true);
+        }}
+      />
+
+      {/* Data Table Panel (wide slide-over) */}
+      <DataTablePanel
+        open={dtPanelOpen}
+        onClose={() => setDtPanelOpen(false)}
+        dataSourceId={dtDataSourceId}
+      />
+
       {/* Desktop sidebar */}
       <div className="hidden md:block">
         <Sidebar
@@ -158,6 +224,7 @@ export default function Home() {
           onSelect={handleSelect}
           onNew={handleNew}
           onDelete={handleDelete}
+          onDataSourcesClick={() => setDsPanelOpen(true)}
         />
       </div>
 
@@ -175,6 +242,7 @@ export default function Home() {
               onSelect={handleSelect}
               onNew={handleNew}
               onDelete={handleDelete}
+              onDataSourcesClick={() => setDsPanelOpen(true)}
             />
           </div>
         </div>
@@ -185,7 +253,6 @@ export default function Home() {
         {/* Top bar */}
         <header className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-zinc-800">
           <div className="flex items-center gap-3">
-            {/* Mobile hamburger */}
             <button
               onClick={() => setSidebarOpen(true)}
               className="md:hidden text-zinc-400 hover:text-white transition"
@@ -195,6 +262,10 @@ export default function Home() {
               </svg>
             </button>
             <h1 className="text-lg font-bold text-white">📊 数据问答 Agent</h1>
+            <DataSourceIndicator
+              name={activeDataSourceName}
+              onClick={() => setDsPanelOpen(true)}
+            />
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs text-zinc-500 hidden sm:inline">
@@ -215,6 +286,7 @@ export default function Home() {
           <ChatArea
             key={activeId ?? 'new'}
             conversationId={activeId}
+            dataSourceId={activeDataSourceId}
             onConversationCreated={handleConversationCreated}
           />
         </div>

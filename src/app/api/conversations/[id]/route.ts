@@ -55,6 +55,7 @@ export async function GET(
   return Response.json({
     id: conv.id,
     title: conv.title,
+    dataSourceId: conv.dataSourceId ?? null,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     messages: messages.map((m) => ({

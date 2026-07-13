@@ -1,17 +1,14 @@
 /**
- * SQL executor — runs a validated query against the read-only retail database.
+ * SQL executor — runs a validated query against a target database.
  *
  * Defense in depth:
- *   Layer 1: connects via RETAIL_DATABASE_URL, whose role (retail_readonly) has
- *            SELECT-only grants — the database itself rejects any write.
+ *   Layer 1: connects via a read-only or limited-privilege connection URL.
  *   Layer 2: validateSql() (sql-validator.ts) runs first; only single SELECTs
  *            with a capped LIMIT reach this module.
- *   Layer 3: the read-only role has `statement_timeout = 5s` set at the role
- *            level (see scripts/seed-retail-db.ts), and we add a JS-side
- *            timeout as a backstop in case the role setting is missing.
+ *   Layer 3: statement_timeout set at the DB role level + JS-side timeout backstop.
  *
- * Returns a structured result so the agent can self-correct on errors
- * (see src/tools/run-sql.ts).
+ * The default target is RETAIL_DATABASE_URL (retail demo). When a user-uploaded
+ * data source is active, USERDATA_DATABASE_URL is used instead.
  */
 
 import { neon } from '@neondatabase/serverless';
@@ -41,24 +38,45 @@ export interface ExecFailure {
 
 export type ExecResult = ExecSuccess | ExecFailure;
 
-const JS_TIMEOUT_MS = 8000; // backstop > DB's 5s so the DB error wins when possible
-const MAX_ROWS = 1000;
-
-let _sql: ReturnType<typeof neon> | null = null;
-
-function getReadonlySql() {
-  if (_sql) return _sql;
-  const url = process.env.RETAIL_DATABASE_URL;
-  if (!url) {
-    throw new Error(
-      'RETAIL_DATABASE_URL is not configured. Set it to the retail_readonly connection string.',
-    );
-  }
-  _sql = neon(url);
-  return _sql;
+export interface ExecOptions {
+  /** Override the database connection string (e.g. for user-uploaded data sources). */
+  connectionString?: string;
+  /** Postgres schema to target (defaults to public). */
+  searchPath?: string;
 }
 
-/** Map a raw Postgres/driver error to a structured code the agent can act on. */
+const JS_TIMEOUT_MS = 8000;
+const MAX_ROWS = 1000;
+
+/** Build a connection URL with an optional `options=-c search_path=...` parameter. */
+function buildConnectionUrl(base: string, searchPath?: string): string {
+  if (!searchPath) return base;
+  // Append PostgreSQL connection option so every query on this connection sees the schema.
+  const opt = `options=-c%20search_path%3D${encodeURIComponent(searchPath)}`;
+  if (base.includes('?')) {
+    return `${base}&${opt}`;
+  }
+  return `${base}?${opt}`;
+}
+
+// Cache per connection string to avoid re-creating neon clients.
+const _clients = new Map<string, ReturnType<typeof neon>>();
+
+function getClient(connectionString?: string): ReturnType<typeof neon> {
+  const key = connectionString ?? (process.env.RETAIL_DATABASE_URL || '');
+  if (!key) {
+    throw new Error(
+      'Database URL is not configured. Set RETAIL_DATABASE_URL or provide a connection string.',
+    );
+  }
+  let client = _clients.get(key);
+  if (!client) {
+    client = neon(key);
+    _clients.set(key, client);
+  }
+  return client;
+}
+
 function classifyDbError(err: unknown): { code: ExecErrorCode; message: string } {
   const message = err instanceof Error ? err.message : String(err);
   const lower = message.toLowerCase();
@@ -77,29 +95,39 @@ function classifyDbError(err: unknown): { code: ExecErrorCode; message: string }
     lower.includes('must be owner') ||
     lower.includes('read-only')
   ) {
-    // Layer 1 fired — a write slipped past validation somehow.
     return { code: 'VALIDATION_ERROR', message: 'Only read-only queries are permitted.' };
   }
   return { code: 'OTHER', message };
 }
 
 /**
- * Validate + execute a SQL query against the read-only retail DB.
- * This is the single entry point used by the runSql tool and the eval harness.
+ * Validate + execute a SQL query.
+ *
+ * @param rawSql  — The LLM-generated SQL to execute.
+ * @param options — Optional connection string override + schema search path.
  */
-export async function validateAndExecute(rawSql: string): Promise<ExecResult> {
-  // Layer 2 — validation.
+export async function validateAndExecute(
+  rawSql: string,
+  options?: ExecOptions,
+): Promise<ExecResult> {
   const validation = validateSql(rawSql);
   if (!validation.valid) {
     return { success: false, error: validation.error, code: validation.code };
   }
 
-  const sql = getReadonlySql();
+  // When targeting a specific schema, inject search_path into the connection URL
+  // rather than via SET LOCAL. Neon's HTTP driver makes a separate HTTP request per
+  // query(), so SET LOCAL would be lost immediately. Connection-option search_path
+  // applies to every query on that connection.
+  const connStr = buildConnectionUrl(
+    options?.connectionString ?? process.env.RETAIL_DATABASE_URL ?? '',
+    options?.searchPath,
+  );
+  const client = getClient(connStr);
   const started = Date.now();
 
   try {
-    // JS-side timeout backstop (Layer 3b).
-    const queryPromise = sql.query(validation.sql);
+    const queryPromise = client.query(validation.sql);
     const rows = (await withTimeout(queryPromise, JS_TIMEOUT_MS)) as Record<
       string,
       unknown

@@ -10,41 +10,45 @@
 
 import { SCHEMA_PROMPT_TEXT } from './schema-description';
 
-/** Shared rules appended to every variant, with the live schema injected. */
-const SHARED_RULES = [
-  '',
-  '## Database schema',
-  SCHEMA_PROMPT_TEXT,
-  '',
-  '## Tools',
-  '- runSql — execute a single read-only SELECT query and get rows back.',
-  '- getSchema — re-read the full schema (tables, columns, relationships) if you are unsure of a name.',
-  '- renderChart — visualize the result of runSql as a bar / line / pie chart.',
-  '',
-  '## How to answer a data question',
-  '1. Compose ONE PostgreSQL SELECT query that answers the question. Use exact',
-  '   table/column names from the schema. Alias aggregates clearly (e.g. SUM(line_total) AS total_revenue).',
-  '2. Call runSql with that query.',
-  '3. If runSql returns an error, READ the error and code:',
-  '   - UNKNOWN_COLUMN → call getSchema to find the correct name, then retry.',
-  '   - SYNTAX_ERROR → fix the SQL and retry with a simpler query.',
-  '   - TIMEOUT → add a WHERE clause or LIMIT to narrow the scope, then retry.',
-  '   - VALIDATION_ERROR → you wrote something other than a single SELECT; rewrite as one SELECT.',
-  '   Do not retry the same query more than 3 times.',
-  '4. When you have rows, decide whether a chart helps. If the data is a',
-  '   comparison, trend, or breakdown, call renderChart:',
-  '   - bar  → comparing values across discrete categories (revenue by product).',
-  '   - line → a trend over time (monthly sales).',
-  '   - pie  → composition / share of a whole (sales by category).',
-  '5. Write a short natural-language answer (2-4 sentences) stating the key numbers',
-  '   and the insight. Reply in the SAME language the user asked in (中文 → 中文).',
-  '',
-  '## Rules',
-  '- ONLY SELECT queries. Never attempt INSERT/UPDATE/DELETE/DROP — they are blocked and will fail.',
-  '- Never invent numbers. Every figure you state must come from a runSql result.',
-  '- Prefer orders.total_amount for order-level totals; use order_items.line_total for product-level breakdowns.',
-  '- Keep result sets focused — add GROUP BY / ORDER BY / LIMIT so the answer is readable.',
-].join('\n');
+/** Build shared rules with schema injected. */
+function buildSharedRules(schemaText: string): string {
+  return [
+    '',
+    '## Database schema',
+    schemaText,
+    '',
+    '## Tools',
+    '- runSql — execute a single read-only SELECT query and get rows back.',
+    '- getSchema — re-read the full schema (tables, columns, relationships) if you are unsure of a name.',
+    '- renderChart — visualize the result of runSql as a bar / line / pie chart.',
+    '',
+    '## How to answer a data question',
+    '1. Compose ONE PostgreSQL SELECT query that answers the question. Use exact',
+    '   table/column names from the schema. Alias aggregates clearly (e.g. SUM(line_total) AS total_revenue).',
+    '2. Call runSql with that query.',
+    '3. If runSql returns an error, READ the error and code:',
+    '   - UNKNOWN_COLUMN → call getSchema to find the correct name, then retry.',
+    '   - SYNTAX_ERROR → fix the SQL and retry with a simpler query.',
+    '   - TIMEOUT → add a WHERE clause or LIMIT to narrow the scope, then retry.',
+    '   - VALIDATION_ERROR → you wrote something other than a single SELECT; rewrite as one SELECT.',
+    '   Do not retry the same query more than 3 times.',
+    '4. When you have rows, decide whether a chart helps. If the data is a',
+    '   comparison, trend, or breakdown, call renderChart:',
+    '   - bar  → comparing values across discrete categories (revenue by product).',
+    '   - line → a trend over time (monthly sales).',
+    '   - pie  → composition / share of a whole (sales by category).',
+    '5. Write a short natural-language answer (2-4 sentences) stating the key numbers',
+    '   and the insight. Reply in the SAME language the user asked in (中文 → 中文).',
+    '',
+    '## Rules',
+    '- ONLY SELECT queries. Never attempt INSERT/UPDATE/DELETE/DROP — they are blocked and will fail.',
+    '- Never invent numbers. Every figure you state must come from a runSql result.',
+    '- All columns in user-uploaded data are stored as TEXT. For numeric calculations,',
+    '  use CAST(column AS NUMERIC). For date comparisons, use CAST(column AS DATE).',
+    '  Check each column\'s CAST hint in the schema above — follow it exactly.',
+    '- Keep result sets focused — add GROUP BY / ORDER BY / LIMIT so the answer is readable.',
+  ].join('\n');
+}
 
 const BASE_VARIANTS = {
   /** v1: Concise — let the model figure out tool use. */
@@ -80,9 +84,9 @@ export type PromptVariant = keyof typeof BASE_VARIANTS;
 
 export const DEFAULT_PROMPT_VARIANT: PromptVariant = 'v2';
 
-export function getSystemPrompt(variant?: string): string {
+export function getSystemPrompt(variant?: string, schemaText?: string): string {
   const v = variant as PromptVariant;
   const base =
     v && BASE_VARIANTS[v] ? BASE_VARIANTS[v] : BASE_VARIANTS[DEFAULT_PROMPT_VARIANT];
-  return base + '\n' + SHARED_RULES;
+  return base + '\n' + buildSharedRules(schemaText ?? SCHEMA_PROMPT_TEXT);
 }

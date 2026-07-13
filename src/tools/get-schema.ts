@@ -9,30 +9,40 @@
 
 import { tool } from 'ai';
 import { z } from 'zod';
-import { SCHEMA_TABLES, RELATIONSHIPS } from '@/lib/schema-description';
+import { SCHEMA_TABLES, RELATIONSHIPS, type TableDef } from '@/lib/schema-description';
 
-export const getSchema = tool({
-  description:
-    'Return the retail database schema: all tables, their columns and types, ' +
-    'and the foreign-key relationships between them. Call this when you are ' +
-    'unsure of an exact table or column name, or after a column-not-found error.',
+interface SchemaOptions {
+  tables?: TableDef[];
+  relationships?: string[];
+}
 
-  parameters: z.object({}),
+export function makeGetSchema(options?: SchemaOptions) {
+  const schemaTables = options?.tables ?? SCHEMA_TABLES;
+  const relationships = options?.relationships ?? RELATIONSHIPS;
 
-  execute: async () => {
-    return {
-      tables: SCHEMA_TABLES.map((t) => ({
-        name: t.name,
-        description: t.description,
-        columns: t.columns.map((c) => ({
-          name: c.name,
-          type: c.type,
-          nullable: c.nullable,
-          description: c.description,
+  return tool({
+    description:
+      'Return the database schema: all tables, their columns and types, ' +
+      'and the foreign-key relationships between them. Call this when you are ' +
+      'unsure of an exact table or column name, or after a column-not-found error.',
+
+    parameters: z.object({}),
+
+    execute: async () => {
+      return {
+        tables: schemaTables.map((t) => ({
+          name: t.name,
+          description: t.description,
+          columns: t.columns.map((c) => ({
+            name: c.name,
+            type: c.type,
+            nullable: c.nullable,
+            description: c.description,
+          })),
+          foreignKeys: t.foreignKeys,
         })),
-        foreignKeys: t.foreignKeys,
-      })),
-      relationships: RELATIONSHIPS,
-    };
-  },
-});
+        relationships,
+      };
+    },
+  });
+}

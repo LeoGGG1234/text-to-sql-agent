@@ -9,6 +9,7 @@ interface SidebarProps {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  onDataSourcesClick: () => void;
 }
 
 export function Sidebar({
@@ -17,6 +18,7 @@ export function Sidebar({
   onSelect,
   onNew,
   onDelete,
+  onDataSourcesClick,
 }: SidebarProps) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
@@ -35,13 +37,20 @@ export function Sidebar({
 
   return (
     <aside className="w-64 shrink-0 border-r border-zinc-800 flex flex-col h-screen bg-zinc-950">
-      {/* New Chat button */}
-      <div className="p-3">
+      {/* New Chat + Data Sources */}
+      <div className="p-3 space-y-2">
         <button
           onClick={onNew}
           className="w-full text-left px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-300 hover:border-zinc-700 hover:text-white transition"
         >
           + New Chat
+        </button>
+        <button
+          onClick={onDataSourcesClick}
+          className="w-full text-left px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-300 hover:border-zinc-700 hover:text-white transition flex items-center gap-2"
+        >
+          <span className="text-xs">📂</span>
+          Data Sources
         </button>
       </div>
 
@@ -74,10 +83,13 @@ export function Sidebar({
                   {conv.messageCount}
                 </span>
               )}
-              {/* Delete button — visible on hover */}
-              <button
+              {/* Delete button — visible on hover. <span> avoids nested <button> a11y violation. */}
+              <span
+                role="button"
+                tabIndex={0}
                 onClick={(e) => handleDelete(e, conv.id)}
-                className={`text-xs transition ${
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleDelete(e as unknown as React.MouseEvent, conv.id); }}
+                className={`text-xs transition cursor-pointer ${
                   confirmDelete === conv.id
                     ? 'text-red-400 font-medium'
                     : 'text-zinc-700 opacity-0 group-hover:opacity-100 hover:text-red-400'
@@ -87,7 +99,7 @@ export function Sidebar({
                 }
               >
                 {confirmDelete === conv.id ? 'Sure?' : '×'}
-              </button>
+              </span>
             </div>
           </button>
         ))}

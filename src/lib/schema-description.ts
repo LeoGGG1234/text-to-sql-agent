@@ -147,18 +147,34 @@ export const RELATIONSHIPS: string[] = [
   'categories.parent_category_id → categories.category_id (subcategory tree)',
 ];
 
-/** Compact text rendering of the schema for system-prompt injection. */
-export const SCHEMA_PROMPT_TEXT: string = (() => {
+/**
+ * Build a compact text rendering of any schema for system-prompt injection.
+ * Accepts optional tables/relationships; falls back to the retail demo defaults.
+ */
+export function buildSchemaPromptText(
+  tables?: TableDef[],
+  relationships?: string[],
+): string {
+  const tbls = tables ?? SCHEMA_TABLES;
+  const rels = relationships ?? RELATIONSHIPS;
+
   const lines: string[] = [];
-  for (const t of SCHEMA_TABLES) {
+  for (const t of tbls) {
     lines.push(`### ${t.name} — ${t.description}`);
     for (const c of t.columns) {
       const nul = c.nullable ? '' : ' NOT NULL';
-      lines.push(`  - ${c.name} ${c.type}${nul} — ${c.description}`);
+      const cExt = c as unknown as Record<string, unknown>;
+      const hint = cExt.hint ? `  [CAST hint: ${String(cExt.hint)}]` : '';
+      lines.push(`  - ${c.name} ${c.type}${nul} — ${c.description}${hint}`);
     }
   }
-  lines.push('');
-  lines.push('Relationships (join paths):');
-  for (const r of RELATIONSHIPS) lines.push(`  - ${r}`);
+  if (rels.length > 0) {
+    lines.push('');
+    lines.push('Relationships (join paths):');
+    for (const r of rels) lines.push(`  - ${r}`);
+  }
   return lines.join('\n');
-})();
+}
+
+/** Compact text rendering of the retail demo schema (backward compatible). */
+export const SCHEMA_PROMPT_TEXT: string = buildSchemaPromptText();
