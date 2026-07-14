@@ -46,7 +46,7 @@ LLM 生成的 SQL 默认不可信。本项目用**三层纵深防御**确保它�
 | **2. AST 校验** | `node-sql-parser` 解析成 AST：必须是单条 `SELECT`，且**逐操作校验 `tableList`**（防数据修改 CTE 绕过），拒绝多语句/注释/`SELECT INTO`/系统表/危险函数，并强制注入 `LIMIT 1000` | 注入、写操作（含 CTE 内写）、数据泄露、拖库 |
 | **3. 语句超时** | 角色级 `statement_timeout = 5s` + JS 侧超时兜底 | 笛卡尔积、慢查询拖垮数据库 |
 
-校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)，覆盖 **61 个单元测试**（写操作/DDL/注入/多语句/数据修改 CTE 绕过/LIMIT 边界全部验证被拒）。
+校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)，覆盖 **155 个单元测试**（写操作/DDL/注入/多语句/数据修改 CTE 绕过/LIMIT 边界全部验证被拒）。
 
 > **一个真实的对抗性发现**：最初的校验只判断 `stmt.type === 'select'`，但 PostgreSQL 的数据修改 CTE（`WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t`）顶层仍报告为 `select`，可绕过该检查。修复方式是逐一校验 `tableList` 中每个操作都是 `select`，并补上回归测试锁死。这也印证了第 1 层只读角色作为纵深防御的价值——校验层被绕过时数据库本身仍会拒绝写入。
 
@@ -100,7 +100,7 @@ npm run dev          # → http://localhost:3000
 ## 🧪 测试与评测
 
 ```bash
-npm test             # 61 个单元测试（SQL 安全层 + provider 校验 + Eval 指标）
+npm test             # 155 个单元测试（SQL 安全层 + row-utils + quality-analyzer + Eval 指标）
 npm run typecheck    # tsc --noEmit
 npm run eval         # 端到端：20 个 NL→SQL 用例，输出执行准确率报告
 ```
