@@ -286,7 +286,7 @@ export async function POST(req: Request) {
               id: crypto.randomUUID(),
               userId,
               conversationId: convId,
-              model: modelId ?? 'deepseek-chat',
+              model: modelId ?? 'deepseek-v4-flash',
               promptTokens: usage.promptTokens,
               completionTokens: usage.completionTokens,
             });

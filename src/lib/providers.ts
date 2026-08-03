@@ -47,7 +47,7 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
   deepseek: {
     id: 'deepseek',
     label: 'DeepSeek',
-    defaultModel: 'deepseek-chat',
+    defaultModel: 'deepseek-v4-flash',
     requiresApiKey: true,
     envVar: 'DEEPSEEK_API_KEY',
   },
