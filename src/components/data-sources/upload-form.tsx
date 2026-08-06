@@ -9,6 +9,8 @@
 
 import { useState, useRef, type DragEvent, type ChangeEvent } from 'react';
 
+const MAX_FILE_MB = 80;
+
 interface Props {
   onSuccess: (result: { id: string; name: string; rowCount: number; columns: Array<{ name: string; semanticType: string }> }) => void;
   onCancel: () => void;
@@ -30,9 +32,8 @@ export function UploadForm({ onSuccess, onCancel }: Props) {
       setError('Only .csv, .xlsx, .xls files are supported.');
       return;
     }
-    const maxMB = 80;
-    if (f.size > maxMB * 1024 * 1024) {
-      setError(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Limit: ${maxMB} MB.`);
+    if (f.size > MAX_FILE_MB * 1024 * 1024) {
+      setError(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Limit: ${MAX_FILE_MB} MB.`);
       return;
     }
     setFile(f);
@@ -112,7 +113,7 @@ export function UploadForm({ onSuccess, onCancel }: Props) {
         ) : (
           <p className="text-xs text-zinc-500">
             Drop a file here or click to browse.<br />
-            <span className="text-zinc-600">.csv, .xlsx, .xls · max 50 MB · 200k rows</span>
+            <span className="text-zinc-600">.csv, .xlsx, .xls · max {MAX_FILE_MB} MB · 200k rows</span>
           </p>
         )}
       </div>

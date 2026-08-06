@@ -9,7 +9,7 @@
  *   3. Otherwise → Better Auth session
  */
 
-import { auth } from './auth';
+import { getAuth } from './auth';
 import { isDevMode, ensureDevUser, isGuestMode, ensureGuestUser } from './dev-helpers';
 
 export async function getSession(req: Request) {
@@ -20,11 +20,11 @@ export async function getSession(req: Request) {
 
   // Guest mode: try real auth first, fall back to guest
   if (isGuestMode()) {
-    const session = await auth.api.getSession({ headers: req.headers });
+    const session = await getAuth().api.getSession({ headers: req.headers });
     if (session) return session;
     return ensureGuestUser();
   }
 
   // Normal auth
-  return auth.api.getSession({ headers: req.headers });
+  return getAuth().api.getSession({ headers: req.headers });
 }

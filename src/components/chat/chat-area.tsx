@@ -18,6 +18,17 @@ interface ProviderOption {
   defaultModel: string;
 }
 
+interface StoredMessagePart {
+  content?: string;
+  toolInvocations?: Message['toolInvocations'];
+}
+
+interface StoredMessage {
+  id: string;
+  role: string;
+  parts?: StoredMessagePart[];
+}
+
 const DEFAULT_PROVIDER = 'deepseek';
 
 interface ChatAreaProps {
@@ -80,7 +91,7 @@ export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
         if (cancelled) return;
         // Reconstruct messages from stored parts
         const msgs: Message[] = (data.messages ?? []).map(
-          (m: { id: string; role: string; parts: any[] }) => {
+          (m: StoredMessage) => {
             const part = m.parts?.[0] ?? {};
             return {
               id: m.id,
@@ -102,7 +113,7 @@ export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
     };
   }, [conversationId]);
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, error } =
+  const { messages, input, handleInputChange, handleSubmit, setInput, isLoading, error } =
     useChat({
       api: '/api/chat',
       initialMessages,
@@ -126,7 +137,7 @@ export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
   };
 
   const fillExample = (text: string) => {
-    handleInputChange({ target: { value: text } } as any);
+    setInput(text);
   };
 
   return (

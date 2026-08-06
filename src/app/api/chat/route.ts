@@ -241,19 +241,25 @@ export async function POST(req: Request) {
           const usage = event.usage;
 
           // Collect tool invocations from all steps
-          const toolInvocations: any[] = [];
+          const toolInvocations: Array<{
+            toolCallId: string;
+            toolName: string;
+            args: unknown;
+            result?: unknown;
+            state?: 'result';
+          }> = [];
           for (const step of event.steps) {
-            for (const toolCall of (step.toolCalls ?? []) as any[]) {
+            for (const toolCall of step.toolCalls ?? []) {
               toolInvocations.push({
                 toolCallId: toolCall.toolCallId,
                 toolName: toolCall.toolName,
                 args: toolCall.args,
               });
             }
-            for (const toolResult of (step.toolResults ?? []) as any[]) {
+            for (const toolResult of step.toolResults ?? []) {
               // Update matching invocation with result
               const inv = toolInvocations.find(
-                (t: any) => t.toolCallId === toolResult.toolCallId,
+                (t) => t.toolCallId === toolResult.toolCallId,
               );
               if (inv) {
                 inv.result = toolResult.result;

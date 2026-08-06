@@ -39,7 +39,6 @@ interface RowResponse {
 
 export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
   // Schema
-  const [tables, setTables] = useState<TableInfo[]>([]);
   const [currentTable, setCurrentTable] = useState<string>('');
   const [schemaLoading, setSchemaLoading] = useState(true);
 
@@ -68,7 +67,6 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
       .then((ds) => {
         const schemaJson = ds.schemaJson;
         const tbls: TableInfo[] = schemaJson?.tables ?? [];
-        setTables(tbls);
         if (tbls.length > 0) {
           setCurrentTable(tbls[0].name);
         }

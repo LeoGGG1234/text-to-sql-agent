@@ -55,7 +55,7 @@ function decodeBuffer(buf: ArrayBuffer, encoding?: string): string {
  *   parse → sanitize → CREATE TABLE (all TEXT) → batch INSERT
  *   → assemble schema_json in memory → INSERT INTO data_sources → COMMIT
  *
- * Limits: 50 MB, 200k rows, 5 req/min per user (configurable via env vars).
+ * Limits: 80 MB, 200k rows, 5 req/min per user (configurable via env vars).
  */
 
 import { NextResponse } from 'next/server';
@@ -164,14 +164,14 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Excel file has no sheets.' }, { status: 400 });
       }
       const sheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1 });
+      const data = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
       if (data.length === 0) {
         return NextResponse.json({ error: 'Empty Excel sheet.' }, { status: 400 });
       }
       // First row as headers, ensure all are strings.
-      headers = (data[0] as unknown[]).map((h) => String(h ?? ''));
-      rows = data.slice(1).map((r) =>
-        (r as unknown[]).map((c) => String(c ?? '')),
+      headers = data[0].map((h) => String(h ?? ''));
+      rows = data.slice(1).map((row: unknown[]) =>
+        row.map((cell) => String(cell ?? '')),
       );
       rows = rows.filter((r) => r.some((c) => c !== ''));
     }

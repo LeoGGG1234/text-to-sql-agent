@@ -144,7 +144,6 @@ export function detectColumns(
     const nonNull = values.filter((v) => !isNullish(v));
     const nullable = nonNull.length < values.length * 0.5;
     const semanticType = detectSemanticType(values);
-    const nonMatching = nonNull.filter((v) => !matchesSemanticType(v, semanticType));
 
     return {
       name,
@@ -187,29 +186,4 @@ export function normalizeFullWidth(s: string): string {
     }
   }
   return result;
-}
-
-/** Check whether a single value matches a semantic type pattern (used for quality analysis). */
-function matchesSemanticType(
-  v: string,
-  semanticType: DiscoveredColumn['semanticType'],
-): boolean {
-  switch (semanticType) {
-    case 'NUMERIC':
-      return /^-?\d+(\.\d+)?$/.test(v.trim());
-    case 'DATE':
-      return [
-        /^\d{4}-\d{2}-\d{2}$/,
-        /^\d{1,2}\/\d{1,2}\/\d{4}$/,
-        /^\d{1,2}\/\d{1,2}\/\d{2}$/,
-        /^\d{4}\/\d{1,2}\/\d{1,2}$/,
-        /^\d{1,2}-\d{1,2}-\d{4}$/,
-      ].some((p) => p.test(v.trim()));
-    case 'BOOLEAN':
-      return ['true', 'false', 'yes', 'no', '0', '1', 'y', 'n'].includes(
-        v.trim().toLowerCase(),
-      );
-    default:
-      return true; // TEXT matches everything
-  }
 }

@@ -19,7 +19,7 @@ import {
   quoteIdent,
   serializeRow,
 } from '@/lib/data-sources/row-utils';
-import type { SchemaJson, DiscoveredTable, DiscoveredColumn } from '@/lib/data-sources/types';
+import type { SchemaJson } from '@/lib/data-sources/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

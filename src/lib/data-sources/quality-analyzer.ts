@@ -351,7 +351,7 @@ export function buildQualityNote(
     const topSamples = Object.entries(profile.nullConvertedSamples)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
-      .map(([k, v]) => (k === '(empty)' ? 'empty strings' : `"${k}"`))
+      .map(([k]) => (k === '(empty)' ? 'empty strings' : `"${k}"`))
       .join(', ');
     warnings.push(
       `${profile.nullConvertedCount} rows have NULL-like values` +
