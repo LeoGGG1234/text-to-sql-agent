@@ -9,24 +9,10 @@
 import { getSession } from '@/lib/auth-helpers';
 import { db, schema } from '@/db';
 import { eq, and } from 'drizzle-orm';
+import { getOwnedConversation } from '@/lib/conversation-manager';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-// Helper: verify user owns the conversation
-async function getOwnedConversation(userId: string, conversationId: string) {
-  const [conv] = await db
-    .select()
-    .from(schema.chatConversations)
-    .where(
-      and(
-        eq(schema.chatConversations.id, conversationId),
-        eq(schema.chatConversations.userId, userId),
-      ),
-    )
-    .limit(1);
-  return conv ?? null;
-}
 
 // ─── GET: Conversation with messages ──────────────────────────
 
@@ -40,7 +26,7 @@ export async function GET(
   }
 
   const { id } = await params;
-  const conv = await getOwnedConversation(session.user.id, id);
+  const conv = await getOwnedConversation(id, session.user.id);
   if (!conv) {
     return Response.json({ error: 'Conversation not found' }, { status: 404 });
   }
@@ -80,7 +66,7 @@ export async function PATCH(
   }
 
   const { id } = await params;
-  const conv = await getOwnedConversation(session.user.id, id);
+  const conv = await getOwnedConversation(id, session.user.id);
   if (!conv) {
     return Response.json({ error: 'Conversation not found' }, { status: 404 });
   }
@@ -92,7 +78,12 @@ export async function PATCH(
   await db
     .update(schema.chatConversations)
     .set({ title, updatedAt: new Date() })
-    .where(eq(schema.chatConversations.id, id));
+    .where(
+      and(
+        eq(schema.chatConversations.id, id),
+        eq(schema.chatConversations.userId, session.user.id),
+      ),
+    );
 
   return Response.json({ ok: true, title });
 }
@@ -109,14 +100,19 @@ export async function DELETE(
   }
 
   const { id } = await params;
-  const conv = await getOwnedConversation(session.user.id, id);
+  const conv = await getOwnedConversation(id, session.user.id);
   if (!conv) {
     return Response.json({ error: 'Conversation not found' }, { status: 404 });
   }
 
   await db
     .delete(schema.chatConversations)
-    .where(eq(schema.chatConversations.id, id));
+    .where(
+      and(
+        eq(schema.chatConversations.id, id),
+        eq(schema.chatConversations.userId, session.user.id),
+      ),
+    );
 
   return Response.json({ ok: true });
 }

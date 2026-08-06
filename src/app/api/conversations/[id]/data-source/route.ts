@@ -11,6 +11,8 @@ import { getDb } from '@/db';
 import * as schema from '@/db/schema';
 import { getSession } from '@/lib/auth-helpers';
 import { eq, and } from 'drizzle-orm';
+import { getOwnedConversation } from '@/lib/conversation-manager';
+import { getOwnedDataSource } from '@/lib/data-sources/schema-manager';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,16 +30,7 @@ export async function PUT(
   const db = getDb();
 
   // Verify conversation belongs to user.
-  const [conv] = await db
-    .select({ id: schema.chatConversations.id })
-    .from(schema.chatConversations)
-    .where(
-      and(
-        eq(schema.chatConversations.id, conversationId),
-        eq(schema.chatConversations.userId, session.user.id),
-      ),
-    )
-    .limit(1);
+  const conv = await getOwnedConversation(conversationId, session.user.id);
 
   if (!conv) {
     return NextResponse.json({ error: 'Conversation not found.' }, { status: 404 });
@@ -53,17 +46,7 @@ export async function PUT(
   const dsId = body.dataSourceId ?? null;
 
   if (dsId) {
-    // Verify data source belongs to user.
-    const [ds] = await db
-      .select({ id: schema.dataSources.id })
-      .from(schema.dataSources)
-      .where(
-        and(
-          eq(schema.dataSources.id, dsId),
-          eq(schema.dataSources.userId, session.user.id),
-        ),
-      )
-      .limit(1);
+    const ds = await getOwnedDataSource(dsId, session.user.id);
 
     if (!ds) {
       return NextResponse.json(
@@ -76,7 +59,12 @@ export async function PUT(
   await db
     .update(schema.chatConversations)
     .set({ dataSourceId: dsId, updatedAt: new Date() })
-    .where(eq(schema.chatConversations.id, conversationId));
+    .where(
+      and(
+        eq(schema.chatConversations.id, conversationId),
+        eq(schema.chatConversations.userId, session.user.id),
+      ),
+    );
 
   return NextResponse.json({ success: true, dataSourceId: dsId });
 }

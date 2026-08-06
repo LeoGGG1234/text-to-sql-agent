@@ -18,7 +18,7 @@ import { getSystemPrompt } from '@/lib/prompts';
 import { checkRateLimit, rateLimitHeaders } from '@/lib/rate-limit';
 import { getSession } from '@/lib/auth-helpers';
 import { db, schema } from '@/db';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { buildTools } from '@/tools';
 import {
   SCHEMA_TABLES,
@@ -29,6 +29,8 @@ import {
 import type { SchemaJson, QualityProfile } from '@/lib/data-sources/types';
 import { buildQualityNote, buildTableQualityNote } from '@/lib/data-sources/quality-analyzer';
 import type { ExecOptions } from '@/lib/sql-executor';
+import { getOwnedConversation } from '@/lib/conversation-manager';
+import { getOwnedDataSource } from '@/lib/data-sources/schema-manager';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60; // seconds (Hobby plan limit)
@@ -87,39 +89,69 @@ export async function POST(req: Request) {
       provider = body.provider;
     }
 
-    // ─── Find or create conversation ────────────────────────
-    let convId = conversationId;
+    // ─── Authorize conversation + data source ───────────────
     const userId = session.user.id;
+    const existingConversation = conversationId
+      ? await getOwnedConversation(conversationId, userId)
+      : null;
 
-    if (convId) {
-      // Verify user owns this conversation
-      const [existing] = await db
-        .select({ id: schema.chatConversations.id })
-        .from(schema.chatConversations)
-        .where(eq(schema.chatConversations.id, convId))
-        .limit(1);
-      if (!existing) {
-        convId = undefined; // Invalid ID — create new
-      }
+    if (conversationId && !existingConversation) {
+      return Response.json(
+        { error: 'Conversation not found' },
+        { status: 404 },
+      );
     }
 
-    if (!convId) {
-      convId = crypto.randomUUID();
+    const convId = existingConversation?.id ?? crypto.randomUUID();
+    const requestedDataSourceId =
+      frontendDataSourceId === undefined
+        ? undefined
+        : frontendDataSourceId || null;
+    const effectiveDataSourceId =
+      requestedDataSourceId !== undefined
+        ? requestedDataSourceId
+        : existingConversation?.dataSourceId ?? null;
+    const ownedDataSource = effectiveDataSourceId
+      ? await getOwnedDataSource(effectiveDataSourceId, userId)
+      : null;
+
+    if (effectiveDataSourceId && !ownedDataSource) {
+      return Response.json(
+        { error: 'Data source not found' },
+        { status: 404 },
+      );
+    }
+
+    // No persistence occurs until every supplied or stored resource has been
+    // authorized for the current user.
+    if (!existingConversation) {
       const now = new Date();
       await db.insert(schema.chatConversations).values({
         id: convId,
         userId,
         title: null,
-        dataSourceId: frontendDataSourceId ?? null,
+        dataSourceId: effectiveDataSourceId,
         createdAt: now,
         updatedAt: now,
       });
     } else {
-      // Bump updatedAt
+      const updates: {
+        updatedAt: Date;
+        dataSourceId?: string | null;
+      } = { updatedAt: new Date() };
+      if (requestedDataSourceId !== undefined) {
+        updates.dataSourceId = requestedDataSourceId;
+      }
+
       await db
         .update(schema.chatConversations)
-        .set({ updatedAt: new Date() })
-        .where(eq(schema.chatConversations.id, convId));
+        .set(updates)
+        .where(
+          and(
+            eq(schema.chatConversations.id, convId),
+            eq(schema.chatConversations.userId, userId),
+          ),
+        );
     }
 
     // ─── Save user message ──────────────────────────────────
@@ -140,85 +172,47 @@ export async function POST(req: Request) {
     let resolvedRelationships: string[] = RELATIONSHIPS;
     let execOptions: ExecOptions | undefined;
 
-    // Sync frontend dataSourceId to DB (covers new conversations + mid-conversation switches).
-    if (convId && frontendDataSourceId !== undefined) {
-      // Normalize both values to null for comparison: the frontend sends ""
-      // for "no data source selected" while the DB stores NULL — without this
-      // normalization every request would fire a spurious UPDATE (null ← "").
-      const nextDsId = frontendDataSourceId || null;
-      const [conv] = await db
-        .select({ dataSourceId: schema.chatConversations.dataSourceId })
-        .from(schema.chatConversations)
-        .where(eq(schema.chatConversations.id, convId))
-        .limit(1);
-      if (conv && (conv.dataSourceId || null) !== nextDsId) {
-        await db
-          .update(schema.chatConversations)
-          .set({ dataSourceId: nextDsId, updatedAt: new Date() })
-          .where(eq(schema.chatConversations.id, convId));
-      }
-    }
-
-    if (convId) {
-      const effectiveDsId = frontendDataSourceId ?? (
-        await db
-          .select({ dataSourceId: schema.chatConversations.dataSourceId })
-          .from(schema.chatConversations)
-          .where(eq(schema.chatConversations.id, convId))
-          .limit(1)
-          .then(([r]) => r?.dataSourceId ?? null)
-      );
-
-      if (effectiveDsId) {
-        const [ds] = await db
-          .select({ type: schema.dataSources.type, config: schema.dataSources.config, schemaJson: schema.dataSources.schemaJson })
-          .from(schema.dataSources)
-          .where(eq(schema.dataSources.id, effectiveDsId))
-          .limit(1);
-
-        if (ds) {
-          const schemaJson = ds.schemaJson as unknown as SchemaJson | null;
-          const qualityProfile = schemaJson?.qualityProfile as QualityProfile | undefined;
-          if (schemaJson?.tables) {
-            // Convert DiscoveredTable[] → TableDef[] for prompt + getSchema tool.
-            resolvedTables = schemaJson.tables.map((t) => {
-              const tableQualityNote =
-                qualityProfile?.table
-                  ? buildTableQualityNote(qualityProfile.table)
-                  : '';
+    if (ownedDataSource) {
+      const schemaJson = ownedDataSource.schemaJson as unknown as SchemaJson | null;
+      const qualityProfile = schemaJson?.qualityProfile as QualityProfile | undefined;
+      if (schemaJson?.tables) {
+        // Convert DiscoveredTable[] → TableDef[] for prompt + getSchema tool.
+        resolvedTables = schemaJson.tables.map((t) => {
+          const tableQualityNote =
+            qualityProfile?.table
+              ? buildTableQualityNote(qualityProfile.table)
+              : '';
+          return {
+            name: `userdata."${t.name}"`,
+            description:
+              `${t.displayName}. ${t.rowCount} rows. All columns are TEXT — use CAST for math/dates.` +
+              (tableQualityNote ? ` ${tableQualityNote}` : ''),
+            columns: t.columns.map((c) => {
+              const colProfile = qualityProfile?.columns?.[c.name];
+              const qualityNote = buildQualityNote(c, colProfile);
               return {
-                name: `userdata."${t.name}"`,
+                name: c.name,
+                type: 'TEXT',
+                nullable: c.nullable,
                 description:
-                  `${t.displayName}. ${t.rowCount} rows. All columns are TEXT — use CAST for math/dates.` +
-                  (tableQualityNote ? ` ${tableQualityNote}` : ''),
-                columns: t.columns.map((c) => {
-                  const colProfile = qualityProfile?.columns?.[c.name];
-                  const qualityNote = buildQualityNote(c, colProfile);
-                  return {
-                    name: c.name,
-                    type: 'TEXT',
-                    nullable: c.nullable,
-                    description:
-                      `${c.displayName} (semantic: ${c.semanticType}). ${c.hint ?? ''}` +
-                      qualityNote,
-                  };
-                }),
-                foreignKeys: [],
+                  `${c.displayName} (semantic: ${c.semanticType}). ${c.hint ?? ''}` +
+                  qualityNote,
               };
-            });
-            resolvedRelationships = schemaJson.relationships;
-          }
+            }),
+            foreignKeys: [],
+          };
+        });
+        resolvedRelationships = schemaJson.relationships;
+      }
 
-          // Set exec options for user-uploaded data sources.
-          if (ds.type === 'upload') {
-            const userdataUrl = process.env.USERDATA_DATABASE_URL;
-            if (userdataUrl) {
-              execOptions = {
-                connectionString: userdataUrl,
-                searchPath: 'userdata',
-              };
-            }
-          }
+      // Set exec options for user-uploaded data sources.
+      if (ownedDataSource.type === 'upload') {
+        const userdataUrl = process.env.USERDATA_DATABASE_URL;
+        if (userdataUrl) {
+          execOptions = {
+            connectionString: userdataUrl,
+            searchPath: 'userdata',
+          };
         }
       }
     }
@@ -302,7 +296,12 @@ export async function POST(req: Request) {
           const [conv] = await db
             .select({ title: schema.chatConversations.title })
             .from(schema.chatConversations)
-            .where(eq(schema.chatConversations.id, convId))
+            .where(
+              and(
+                eq(schema.chatConversations.id, convId),
+                eq(schema.chatConversations.userId, userId),
+              ),
+            )
             .limit(1);
 
           if (conv && !conv.title && event.text) {
@@ -314,7 +313,12 @@ export async function POST(req: Request) {
               await db
                 .update(schema.chatConversations)
                 .set({ title, updatedAt: new Date() })
-                .where(eq(schema.chatConversations.id, convId));
+                .where(
+                  and(
+                    eq(schema.chatConversations.id, convId),
+                    eq(schema.chatConversations.userId, userId),
+                  ),
+                );
             }
           }
         } catch (err) {

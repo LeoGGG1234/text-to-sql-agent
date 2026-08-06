@@ -5,10 +5,38 @@
  * on every request, avoiding multi-instance staleness.
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getDb } from '@/db';
 import * as schema from '@/db/schema';
 import type { SchemaJson } from './types';
+
+/**
+ * Get data source metadata by ID while enforcing ownership in the query.
+ */
+export async function getOwnedDataSource(
+  dataSourceId: string,
+  userId: string,
+) {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      id: schema.dataSources.id,
+      userId: schema.dataSources.userId,
+      type: schema.dataSources.type,
+      config: schema.dataSources.config,
+      schemaJson: schema.dataSources.schemaJson,
+    })
+    .from(schema.dataSources)
+    .where(
+      and(
+        eq(schema.dataSources.id, dataSourceId),
+        eq(schema.dataSources.userId, userId),
+      ),
+    )
+    .limit(1);
+
+  return row ?? null;
+}
 
 /**
  * Get the SchemaJson for a data source by ID.
@@ -18,21 +46,9 @@ export async function getSchemaForDataSource(
   dataSourceId: string,
   userId: string,
 ): Promise<SchemaJson | null> {
-  const db = getDb();
-  const [row] = await db
-    .select({ schemaJson: schema.dataSources.schemaJson })
-    .from(schema.dataSources)
-    .where(eq(schema.dataSources.id, dataSourceId));
+  const row = await getOwnedDataSource(dataSourceId, userId);
 
   if (!row?.schemaJson) return null;
-
-  // Verify ownership separately (used in API routes — this is a defense-in-depth check)
-  const [owner] = await db
-    .select({ userId: schema.dataSources.userId })
-    .from(schema.dataSources)
-    .where(eq(schema.dataSources.id, dataSourceId));
-
-  if (!owner || owner.userId !== userId) return null;
 
   return row.schemaJson as unknown as SchemaJson;
 }
