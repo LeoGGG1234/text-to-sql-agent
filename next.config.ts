@@ -6,6 +6,9 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
+  // Avoid Next.js treating an unrelated lockfile in the user directory as
+  // this app's workspace root when collecting production build traces.
+  outputFileTracingRoot: __dirname,
   webpack: (config) => {
     // @better-auth/kysely-adapter imports SQLite dialect files that
     // reference exports missing from `kysely` 0.29.x. We use Drizzle + Postgres,

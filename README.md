@@ -86,8 +86,8 @@ cp .env.example .env.local
 #    填入 DEEPSEEK_API_KEY、DATABASE_URL（app 库）、
 #    RETAIL_ADMIN_DATABASE_URL（种子用）、BETTER_AUTH_SECRET
 
-# 3. 初始化 app 库（auth/chat 表）
-npx drizzle-kit push
+# 3. 初始化或迁移 app 库（auth/chat 表）
+npx drizzle-kit migrate
 
 # 4. 种子零售演示库（建表 + 数据 + 只读角色）
 RETAIL_ADMIN_DATABASE_URL=postgresql://... npm run seed
@@ -100,12 +100,42 @@ npm run dev          # → http://localhost:3000
 ## 🧪 测试与评测
 
 ```bash
-npm test             # 155 个单元测试（SQL 安全层 + row-utils + quality-analyzer + Eval 指标）
+npm test             # 单元/回归测试（不连接外部数据库）
 npm run typecheck    # tsc --noEmit
 npm run eval         # 端到端：20 个 NL→SQL 用例，输出执行准确率报告
 ```
 
 Eval 用例覆盖 5 个类别（simple / aggregation / join / time_series / multi_step），中英双语。指标：**执行准确率**（生成 SQL 的结果集与参考答案比对）、**有效率**、**Schema 遵循度**。
+
+### 安全部署验证
+
+迁移后先配置/加固 userdata 只读角色，再执行 readiness gate。这两个命令都要求显式目标，不会回退读取 `DATABASE_URL`：
+
+```bash
+HARDEN_DATABASE_URL=postgresql://... \
+USERDATA_READONLY_PASSWORD=replace-with-a-strong-random-password \
+npm run db:harden-userdata
+
+CHECK_DATABASE_URL=postgresql://... npm run db:check
+```
+
+真实认证、Guest 隔离、ownership transfer 和 SQL allowlist 集成测试只能指向一次性测试数据库：
+
+```bash
+INTEGRATION_DATABASE_URL=postgresql://... \
+ALLOW_DESTRUCTIVE_INTEGRATION=true \
+npm run test:integration
+```
+
+匿名数据清理默认为 dry-run，并要求显式数据库目标。实际删除还需要 `--execute` 和确认口令；旧共享 Guest 只有加 `--include-legacy` 才会进入候选：
+
+```bash
+CLEANUP_DATABASE_URL=postgresql://... npm run guest:cleanup
+
+CLEANUP_DATABASE_URL=postgresql://... \
+CONFIRM_GUEST_CLEANUP=DELETE_EXPIRED_GUEST_DATA \
+npm run guest:cleanup -- --execute
+```
 
 ---
 

@@ -25,6 +25,13 @@ export type ValidateResult =
   | { valid: true; sql: string }
   | { valid: false; error: string; code: ValidationCode };
 
+export interface SqlAccessScope {
+  /** The only PostgreSQL schema the query may reference. */
+  schema: string;
+  /** Physical tables owned by the active data source. */
+  tables: readonly string[];
+}
+
 const parser = new Parser();
 const PARSE_OPTS = { database: 'postgresql' } as const;
 
@@ -71,7 +78,7 @@ const FORBIDDEN_PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /\/\*/, reason: 'SQL block comments are not allowed' },
   { re: /;\s*\S/, reason: 'multiple statements are not allowed' },
   {
-    re: /\b(pg_sleep|pg_read_file|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|dblink|copy|do)\b/i,
+    re: /\b(pg_sleep|pg_read_file|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|dblink|copy|do|query_to_xml|cursor_to_xml|table_to_xml(?:schema)?|schema_to_xml(?:schema)?|database_to_xml(?:schema)?)\b/i,
     reason: 'disallowed function or statement',
   },
   {
@@ -86,7 +93,166 @@ const FORBIDDEN_PATTERNS: { re: RegExp; reason: string }[] = [
  */
 const ALLOWED_STATEMENT_TYPE = 'select';
 
-export function validateSql(raw: string): ValidateResult {
+interface ParsedTableRef {
+  operation: string;
+  schema: string | null;
+  table: string;
+}
+
+function parseTableRef(entry: string): ParsedTableRef | null {
+  const [operation, schemaName, ...tableParts] = entry.split('::');
+  if (!operation || schemaName === undefined || tableParts.length === 0) {
+    return null;
+  }
+
+  const table = tableParts.join('::');
+  if (!table) return null;
+
+  return {
+    operation,
+    schema: schemaName === 'null' ? null : schemaName,
+    table,
+  };
+}
+
+/** Collect CTE aliases so tableList entries for CTE references are not treated as physical tables. */
+function validateScopedTableAccess(
+  node: unknown,
+  accessScope: SqlAccessScope,
+): string | null {
+  const allowedTables = new Set(accessScope.tables);
+  const visited = new Set<object>();
+
+  function validatePhysicalTable(
+    schemaName: unknown,
+    tableName: unknown,
+  ): string | null {
+    if (
+      typeof tableName !== 'string' ||
+      !tableName ||
+      (schemaName != null && typeof schemaName !== 'string')
+    ) {
+      return 'Could not safely inspect table access.';
+    }
+
+    const effectiveSchema = schemaName ?? accessScope.schema;
+    if (
+      effectiveSchema !== accessScope.schema ||
+      !allowedTables.has(tableName)
+    ) {
+      return `Table "${effectiveSchema}.${tableName}" is not allowed for this data source.`;
+    }
+
+    return null;
+  }
+
+  function visit(value: unknown, visibleCtes: ReadonlySet<string>): string | null {
+    if (!value || typeof value !== 'object') return null;
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const error = visit(item, visibleCtes);
+        if (error) return error;
+      }
+      return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (record.type === ALLOWED_STATEMENT_TYPE) {
+      return visitSelect(record, visibleCtes);
+    }
+
+    if (visited.has(value)) return null;
+    visited.add(value);
+
+    for (const child of Object.values(record)) {
+      const error = visit(child, visibleCtes);
+      if (error) return error;
+    }
+    return null;
+  }
+
+  function visitSelect(
+    select: Record<string, unknown>,
+    inheritedCtes: ReadonlySet<string>,
+  ): string | null {
+    if (visited.has(select)) return null;
+    visited.add(select);
+
+    const visibleCtes = new Set(inheritedCtes);
+    if (select.with != null && !Array.isArray(select.with)) {
+      return 'Could not safely inspect CTE access.';
+    }
+
+    if (Array.isArray(select.with)) {
+      // Process CTEs in declaration order. A later CTE may reference an earlier
+      // one, but a local alias must never leak into an outer query scope.
+      for (const entry of select.with) {
+        if (!entry || typeof entry !== 'object') {
+          return 'Could not safely inspect CTE access.';
+        }
+        const cte = entry as Record<string, unknown>;
+        const name = (cte.name as { value?: unknown } | undefined)?.value;
+        if (typeof name !== 'string' || !name || !('stmt' in cte)) {
+          return 'Could not safely inspect CTE access.';
+        }
+
+        const error = visit(cte.stmt, visibleCtes);
+        if (error) return error;
+        visibleCtes.add(name);
+      }
+    }
+
+    if (select.from != null && !Array.isArray(select.from)) {
+      return 'Could not safely inspect table access.';
+    }
+
+    if (Array.isArray(select.from)) {
+      for (const source of select.from) {
+        if (!source || typeof source !== 'object') {
+          return 'Could not safely inspect table access.';
+        }
+        const tableSource = source as Record<string, unknown>;
+        if ('table' in tableSource) {
+          const tableName = tableSource.table;
+          const schemaName = tableSource.db;
+          const isCte =
+            schemaName == null &&
+            typeof tableName === 'string' &&
+            visibleCtes.has(tableName);
+          if (!isCte) {
+            const error = validatePhysicalTable(schemaName, tableName);
+            if (error) return error;
+          }
+        }
+
+        // Derived tables and JOIN conditions can contain additional subqueries.
+        for (const [key, child] of Object.entries(tableSource)) {
+          if (key === 'table' || key === 'db' || key === 'as') continue;
+          const error = visit(child, visibleCtes);
+          if (error) return error;
+        }
+      }
+    }
+
+    // Inspect WHERE/HAVING expressions, scalar subqueries, and set-operation
+    // branches. Local CTEs remain visible throughout this SELECT only.
+    for (const [key, child] of Object.entries(select)) {
+      if (key === 'with' || key === 'from') continue;
+      const error = visit(child, visibleCtes);
+      if (error) return error;
+    }
+
+    return null;
+  }
+
+  return visit(node, new Set());
+}
+
+export function validateSql(
+  raw: string,
+  accessScope?: SqlAccessScope,
+): ValidateResult {
   const sql = (raw ?? '').trim().replace(/;\s*$/, ''); // drop a single trailing ;
 
   if (!sql) {
@@ -148,12 +314,33 @@ export function validateSql(raw: string): ValidateResult {
   // node-sql-parser still reports as type "select". tableList exposes the real
   // operation per table as "{op}::{db}::{table}" (e.g. "update::null::orders"),
   // so we reject if anything other than a select operation is present.
+  const tableRefs: ParsedTableRef[] = [];
   for (const entry of tableList) {
-    const op = String(entry).split('::')[0];
-    if (op !== ALLOWED_STATEMENT_TYPE) {
+    const tableRef = parseTableRef(String(entry));
+    if (!tableRef) {
       return {
         valid: false,
-        error: `Only read-only SELECT operations are allowed (found "${op}").`,
+        error: 'Could not safely inspect table access.',
+        code: 'VALIDATION_ERROR',
+      };
+    }
+    if (tableRef.operation !== ALLOWED_STATEMENT_TYPE) {
+      return {
+        valid: false,
+        error: `Only read-only SELECT operations are allowed (found "${tableRef.operation}").`,
+        code: 'VALIDATION_ERROR',
+      };
+    }
+    tableRefs.push(tableRef);
+  }
+
+  // ── Enforce the active data source's physical table boundary ──
+  if (accessScope) {
+    const scopeError = validateScopedTableAccess(stmt, accessScope);
+    if (scopeError) {
+      return {
+        valid: false,
+        error: scopeError,
         code: 'VALIDATION_ERROR',
       };
     }

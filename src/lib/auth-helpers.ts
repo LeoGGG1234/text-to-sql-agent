@@ -1,16 +1,15 @@
 /**
- * Unified session retrieval — dev/guest bypass or real Better Auth.
+ * Unified session retrieval — local dev bypass or real Better Auth.
  *
  * All API routes should use `getSession(req)` instead of calling
- * `auth.api.getSession()` directly. This centralizes the bypass logic:
+ * `auth.api.getSession()` directly. This centralizes the session logic:
  *
- *   1. DEV_MODE=true   → dev user (local development)
- *   2. ALLOW_GUEST=true → guest user if no real session (production demo)
- *   3. Otherwise → Better Auth session
+ *   1. DEV_MODE=true → dev user (local development)
+ *   2. Otherwise → Better Auth session (including anonymous demo sessions)
  */
 
 import { getAuth } from './auth';
-import { isDevMode, ensureDevUser, isGuestMode, ensureGuestUser } from './dev-helpers';
+import { isDevMode, ensureDevUser } from './dev-helpers';
 
 export async function getSession(req: Request) {
   // Dev mode always wins — no real auth needed
@@ -18,13 +17,6 @@ export async function getSession(req: Request) {
     return ensureDevUser();
   }
 
-  // Guest mode: try real auth first, fall back to guest
-  if (isGuestMode()) {
-    const session = await getAuth().api.getSession({ headers: req.headers });
-    if (session) return session;
-    return ensureGuestUser();
-  }
-
-  // Normal auth
+  // Real auth, including per-browser anonymous demo sessions
   return getAuth().api.getSession({ headers: req.headers });
 }

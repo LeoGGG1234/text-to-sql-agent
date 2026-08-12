@@ -212,6 +212,10 @@ export async function POST(req: Request) {
           execOptions = {
             connectionString: userdataUrl,
             searchPath: 'userdata',
+            accessScope: {
+              schema: 'userdata',
+              tables: schemaJson?.tables.map((table) => table.name) ?? [],
+            },
           };
         }
       }

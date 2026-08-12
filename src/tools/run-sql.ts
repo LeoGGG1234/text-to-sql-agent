@@ -8,9 +8,10 @@
  *
  * Self-correction: on failure the result carries a `code` field
  * (UNKNOWN_COLUMN / SYNTAX_ERROR / TIMEOUT / VALIDATION_ERROR) so the model
- * knows how to fix its next attempt. A per-call retry counter caps the loop
- * at MAX_ATTEMPTS so a model that cannot fix its query stops instead of
- * burning every step.
+ * knows how to fix its next attempt. A consecutive-failure counter caps the
+ * loop at MAX_ATTEMPTS so a model that cannot fix its query stops instead of
+ * burning every step. Successful queries reset that counter because they are
+ * useful analysis, not failed retries.
  */
 
 import { tool } from 'ai';
@@ -27,7 +28,7 @@ const MAX_ATTEMPTS = 3;
  * @param execOptions — Optional connection string / search path for user-uploaded data sources.
  */
 export function makeRunSql(execOptions?: ExecOptions) {
-  let attempts = 0;
+  let consecutiveFailures = 0;
 
   return tool({
     description:
@@ -42,15 +43,14 @@ export function makeRunSql(execOptions?: ExecOptions) {
         .string()
         .describe(
           'A single PostgreSQL SELECT statement. Alias aggregates clearly ' +
-            '(e.g. SUM(line_total) AS total_revenue). For dates use ISO format ' +
+            '(e.g. SUM(line_total) AS total_revenue). Avoid reserved aliases ' +
+            'such as nulls; use descriptive names such as null_count. For dates use ISO format ' +
             "(e.g. order_date >= '2025-01-01'). Do NOT write anything other than SELECT.",
         ),
     }),
 
     execute: async ({ sql }) => {
-      attempts += 1;
-
-      if (attempts > MAX_ATTEMPTS) {
+      if (consecutiveFailures >= MAX_ATTEMPTS) {
         return {
           success: false,
           code: 'MAX_RETRIES',
@@ -63,15 +63,26 @@ export function makeRunSql(execOptions?: ExecOptions) {
       const result = await validateAndExecute(sql, execOptions);
 
       if (!result.success) {
+        consecutiveFailures += 1;
+        const attemptsRemaining = Math.max(
+          0,
+          MAX_ATTEMPTS - consecutiveFailures,
+        );
         return {
           success: false,
           code: result.code,
           error: result.error,
-          attempt: attempts,
-          attemptsRemaining: Math.max(0, MAX_ATTEMPTS - attempts),
+          attempt: consecutiveFailures,
+          attemptsRemaining,
+          nextAction:
+            attemptsRemaining > 0
+              ? 'Call runSql again now with corrected SQL; do not only describe a future retry.'
+              : 'Stop retrying and explain the failure to the user.',
           sql,
         };
       }
+
+      consecutiveFailures = 0;
 
       return {
         success: true,

@@ -7,7 +7,7 @@ import { useEffect } from 'react';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { data: session, isPending } = useSession();
+  const { data: session, isPending, refetch } = useSession();
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -17,7 +17,7 @@ export default function LoginPage() {
   const [guestMode, setGuestMode] = useState(false);
   const [enteringGuest, setEnteringGuest] = useState(false);
 
-  // Redirect if already logged in, or if in dev/guest bypass mode
+  // Redirect if already authenticated (including guest) or in local dev mode
   useEffect(() => {
     if (session && !isPending) {
       router.replace('/');
@@ -38,6 +38,7 @@ export default function LoginPage() {
     try {
       const res = await fetch('/api/guest-login', { method: 'POST' });
       if (res.ok) {
+        await refetch();
         router.replace('/');
       } else {
         setError('Demo unavailable. Please sign in or create an account.');
@@ -197,7 +198,7 @@ export default function LoginPage() {
               {enteringGuest ? '进入中...' : '🎮 体验 Demo'}
             </button>
             <p className="mt-2 text-center text-xs text-zinc-600">
-              无需注册 — 直接体验 AI 数据分析
+              无需注册 — Demo 数据为临时保存
             </p>
           </>
         )}

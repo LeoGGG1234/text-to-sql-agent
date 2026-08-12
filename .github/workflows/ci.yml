@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+
+  security-integration:
+    runs-on: ubuntu-latest
+    env:
+      INTEGRATION_DATABASE_URL: ${{ secrets.INTEGRATION_DATABASE_URL }}
+      ALLOW_DESTRUCTIVE_INTEGRATION: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run disposable-database security integration tests
+        if: env.INTEGRATION_DATABASE_URL != ''
+        run: npm run test:integration
+      - name: Verify migrated schema
+        if: env.INTEGRATION_DATABASE_URL != ''
+        env:
+          CHECK_DATABASE_URL: ${{ env.INTEGRATION_DATABASE_URL }}
+        run: npm run db:check
+      - name: Explain skipped integration tests
+        if: env.INTEGRATION_DATABASE_URL == ''
+        run: echo "INTEGRATION_DATABASE_URL secret is not configured; security integration tests were skipped."

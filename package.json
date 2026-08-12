@@ -9,8 +9,12 @@
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "db:harden-userdata": "node --import tsx scripts/harden-userdata-role.ts",
+    "db:check": "node --import tsx scripts/check-deployment-readiness.ts",
+    "guest:cleanup": "node --import tsx scripts/cleanup-anonymous-users.ts",
     "seed": "npx tsx scripts/seed-retail-db.ts",
     "eval": "npx tsx eval/run-eval.ts"
   },
@@ -42,6 +46,7 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "^15.5.19",
     "tailwindcss": "^4.3.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.8.3",
     "vitest": "^2.1.9"
   }

@@ -60,7 +60,6 @@ function decodeBuffer(buf: ArrayBuffer, encoding?: string): string {
 
 import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
-import * as Papa from 'papaparse';
 import { neon } from '@neondatabase/serverless';
 import { getDb } from '@/db';
 import * as schema from '@/db/schema';
@@ -68,13 +67,18 @@ import { getSession } from '@/lib/auth-helpers';
 import { detectColumns, NULL_LIKE_VALUES, normalizeFullWidth } from '@/lib/data-sources/type-detector';
 import type { DiscoveredTable, SchemaJson, UploadConfig, QualityProfile } from '@/lib/data-sources/types';
 import { analyzeQuality } from '@/lib/data-sources/quality-analyzer';
+import {
+  ensureUserdataReadonlyRole,
+  USERDATA_SCHEMA,
+} from '@/lib/data-sources/userdata-security';
 import { checkRateLimit } from '@/lib/rate-limit';
+import { parseCsvTable } from '@/lib/data-sources/csv-parser';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120; // 2 min — Vercel Pro supports up to 300s
 
-const UPLOAD_SCHEMA = 'userdata';
+const UPLOAD_SCHEMA = USERDATA_SCHEMA;
 
 // Upload limits — configurable via env vars with sensible defaults.
 const MAX_FILE_BYTES = parseInt(process.env.UPLOAD_MAX_FILE_MB ?? '80', 10) * 1024 * 1024;
@@ -146,15 +150,15 @@ export async function POST(req: Request) {
     if (ext === 'csv') {
       const buf = await file.arrayBuffer();
       const text = decodeBuffer(buf);
-      const parsed = Papa.parse<string[]>(text, { header: false });
-      if (parsed.data.length === 0 || parsed.errors.length > 0) {
-        const errMsg = parsed.errors[0]?.message ?? 'Empty CSV';
-        return NextResponse.json({ error: `CSV parse error: ${errMsg}` }, { status: 400 });
+      const parsed = parseCsvTable(text);
+      if (!parsed.ok) {
+        return NextResponse.json(
+          { error: `CSV parse error: ${parsed.error}` },
+          { status: 400 },
+        );
       }
-      headers = parsed.data[0] as string[];
-      rows = parsed.data.slice(1) as string[][];
-      // Filter out completely empty trailing rows.
-      rows = rows.filter((r) => r.some((c) => c !== ''));
+      headers = parsed.headers;
+      rows = parsed.rows;
     } else {
       // Excel: read first sheet.
       const buf = await file.arrayBuffer();
@@ -265,37 +269,12 @@ export async function POST(req: Request) {
   let rowCount = 0;
 
   // ── One-time setup (outside the data transaction) ──────────
-  // Ensure userdata schema and read-only role exist.
-  // These run before BEGIN so role DDL doesn't bloat the data transaction.
-  await sql.query(`CREATE SCHEMA IF NOT EXISTS ${UPLOAD_SCHEMA}`);
-
-  const [roleExists] = await sql.query(
-    `SELECT EXISTS (SELECT FROM pg_roles WHERE rolname = 'userdata_readonly') AS exists`,
-  );
-  if (!(roleExists as { exists: boolean }).exists) {
-    const roPassword = process.env.USERDATA_READONLY_PASSWORD;
-    if (!roPassword) {
-      if (process.env.NODE_ENV === 'production') {
-        throw new Error(
-          'USERDATA_READONLY_PASSWORD is required in production. ' +
-            'Set it to a strong random password matching your USERDATA_DATABASE_URL.',
-        );
-      }
-      console.warn(
-        '[upload] USERDATA_READONLY_PASSWORD not set — falling back to dev default. ' +
-          'Set this env var before deploying to production.',
-      );
-    }
-    const password = roPassword || 'userdata_demo_pw';
-    await sql.query(
-      `CREATE ROLE userdata_readonly WITH LOGIN PASSWORD '${password.replace(/'/g, "''")}'`,
-    );
-    await sql.query(`GRANT USAGE ON SCHEMA ${UPLOAD_SCHEMA} TO userdata_readonly`);
-    await sql.query(
-      `ALTER DEFAULT PRIVILEGES IN SCHEMA ${UPLOAD_SCHEMA} GRANT SELECT ON TABLES TO userdata_readonly`,
-    );
-    await sql.query(`ALTER ROLE userdata_readonly SET statement_timeout = '5s'`);
-  }
+  // Ensure the shared database role remains strictly read-only even if it
+  // already existed or was modified outside the application.
+  await ensureUserdataReadonlyRole(sql, {
+    password: process.env.USERDATA_READONLY_PASSWORD,
+    production: process.env.NODE_ENV === 'production',
+  });
 
   try {
     await sql.query('BEGIN');

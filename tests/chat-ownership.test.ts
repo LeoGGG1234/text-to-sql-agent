@@ -194,6 +194,10 @@ describe('POST /api/chat ownership boundaries', () => {
   });
 
   it('continues an owned conversation with an owned data source', async () => {
+    vi.stubEnv(
+      'USERDATA_DATABASE_URL',
+      'postgresql://userdata-readonly.example/test',
+    );
     mocks.getOwnedConversation.mockResolvedValue({
       id: CONVERSATION_A,
       userId: USER_A,
@@ -247,5 +251,17 @@ describe('POST /api/chat ownership boundaries', () => {
     );
     expect(mocks.getModel).toHaveBeenCalledOnce();
     expect(mocks.streamText).toHaveBeenCalledOnce();
+    expect(mocks.buildTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execOptions: {
+          connectionString: 'postgresql://userdata-readonly.example/test',
+          searchPath: 'userdata',
+          accessScope: {
+            schema: 'userdata',
+            tables: ['ds_owned'],
+          },
+        },
+      }),
+    );
   });
 });

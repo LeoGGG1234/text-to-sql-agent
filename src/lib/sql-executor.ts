@@ -5,14 +5,18 @@
  *   Layer 1: connects via a read-only or limited-privilege connection URL.
  *   Layer 2: validateSql() (sql-validator.ts) runs first; only single SELECTs
  *            with a capped LIMIT reach this module.
- *   Layer 3: statement_timeout set at the DB role level + JS-side timeout backstop.
+ *   Layer 3: connection-enforced read-only/statement timeout settings +
+ *            JS-side timeout backstop.
  *
  * The default target is RETAIL_DATABASE_URL (retail demo). When a user-uploaded
  * data source is active, USERDATA_DATABASE_URL is used instead.
  */
 
 import { neon } from '@neondatabase/serverless';
-import { validateSql } from './sql-validator';
+import {
+  validateSql,
+  type SqlAccessScope,
+} from './sql-validator';
 
 export type ExecErrorCode =
   | 'VALIDATION_ERROR'
@@ -43,6 +47,8 @@ export interface ExecOptions {
   connectionString?: string;
   /** Postgres schema to target (defaults to public). */
   searchPath?: string;
+  /** Physical table boundary derived from the ownership-verified data source. */
+  accessScope?: SqlAccessScope;
 }
 
 const JS_TIMEOUT_MS = 8000;
@@ -51,12 +57,16 @@ const MAX_ROWS = 1000;
 /** Build a connection URL with an optional `options=-c search_path=...` parameter. */
 function buildConnectionUrl(base: string, searchPath?: string): string {
   if (!searchPath) return base;
-  // Append PostgreSQL connection option so every query on this connection sees the schema.
-  const opt = `options=-c%20search_path%3D${encodeURIComponent(searchPath)}`;
-  if (base.includes('?')) {
-    return `${base}&${opt}`;
-  }
-  return `${base}?${opt}`;
+  const url = new URL(base);
+  const existingOptions = url.searchParams.get('options')?.trim();
+  const options = [
+    existingOptions,
+    `-c search_path=${searchPath}`,
+    '-c statement_timeout=5000',
+    '-c default_transaction_read_only=on',
+  ].filter(Boolean);
+  url.searchParams.set('options', options.join(' '));
+  return url.toString();
 }
 
 // Cache per connection string to avoid re-creating neon clients.
@@ -110,7 +120,21 @@ export async function validateAndExecute(
   rawSql: string,
   options?: ExecOptions,
 ): Promise<ExecResult> {
-  const validation = validateSql(rawSql);
+  const hasCustomTarget = Boolean(
+    options?.connectionString || options?.searchPath,
+  );
+  if (
+    hasCustomTarget &&
+    (!options?.accessScope || options.accessScope.schema !== options.searchPath)
+  ) {
+    return {
+      success: false,
+      error: 'Custom database targets require a matching table access scope.',
+      code: 'VALIDATION_ERROR',
+    };
+  }
+
+  const validation = validateSql(rawSql, options?.accessScope);
   if (!validation.valid) {
     return { success: false, error: validation.error, code: validation.code };
   }

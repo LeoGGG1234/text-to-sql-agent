@@ -4,14 +4,15 @@
  * POST /api/guest-login
  *
  * Requires ALLOW_GUEST=true in environment variables.
- * When called, the frontend navigates to / where the auth guard
- * detects guestMode and auto-creates the bypass session.
+ * Creates a unique Better Auth anonymous session for this browser.
  */
+
+import { getAuth } from '@/lib/auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST() {
+export async function POST(req: Request) {
   if (process.env.ALLOW_GUEST !== 'true') {
     return Response.json(
       { error: 'Guest mode is not enabled' },
@@ -19,5 +20,11 @@ export async function POST() {
     );
   }
 
-  return Response.json({ ok: true });
+  const authUrl = new URL('/api/auth/sign-in/anonymous', req.url);
+  return getAuth().handler(
+    new Request(authUrl, {
+      method: 'POST',
+      headers: req.headers,
+    }),
+  );
 }

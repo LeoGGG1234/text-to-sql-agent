@@ -1,14 +1,9 @@
 /**
- * Auth bypass helpers — dev mode (local) and guest mode (production demo).
+ * Auth bypass helpers — local development only.
  *
  * DEV_MODE=true (set in .env.local only, never in Vercel production):
  *   - API routes skip Better Auth session checks and use a hardcoded dev user
  *   - Frontend skips the login page and renders with a mock session
- *
- * ALLOW_GUEST=true (set in Vercel production env):
- *   - API routes accept guest user sessions (no email/password required)
- *   - Frontend shows "Try Demo" button on login page
- *   - Guest conversations use a shared guest user
  */
 
 import { db, schema } from '@/db';
@@ -21,22 +16,6 @@ export const DEV_USER_EMAIL = 'dev@localhost';
 
 export function isDevMode(): boolean {
   return process.env.NODE_ENV !== 'production' && process.env.DEV_MODE === 'true';
-}
-
-// ─── Guest mode (production demo) ─────────────────────────────
-
-const GUEST_USER_ID = 'guest-00000000-0000-4000-a000-000000000001';
-const GUEST_USER_EMAIL = 'guest@text-to-sql.demo';
-
-export function isGuestMode(): boolean {
-  return process.env.ALLOW_GUEST === 'true';
-}
-
-/**
- * Any auth-bypass mode active? (dev or guest)
- */
-export function isBypassMode(): boolean {
-  return isDevMode() || isGuestMode();
 }
 
 // ─── User creation ────────────────────────────────────────────
@@ -94,12 +73,4 @@ export async function ensureDevUser() {
   }
   await ensureUser(DEV_USER_ID, DEV_USER_EMAIL, 'Developer');
   return makeMockSession(DEV_USER_ID, DEV_USER_EMAIL, 'Developer', 'Dev Mode');
-}
-
-export async function ensureGuestUser() {
-  if (!isGuestMode()) {
-    throw new Error('ensureGuestUser called without ALLOW_GUEST');
-  }
-  await ensureUser(GUEST_USER_ID, GUEST_USER_EMAIL, 'Guest');
-  return makeMockSession(GUEST_USER_ID, GUEST_USER_EMAIL, 'Guest', 'Guest Mode');
 }

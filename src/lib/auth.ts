@@ -6,7 +6,9 @@
 
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { anonymous } from 'better-auth/plugins';
 import { getDb } from '@/db';
+import { transferAnonymousUserResources } from './guest-ownership';
 
 function createAuth() {
   return betterAuth({
@@ -21,6 +23,19 @@ function createAuth() {
       expiresIn: 30 * 24 * 60 * 60, // 30 days
       updateAge: 24 * 60 * 60, // Renew every 24 hours of activity
     },
+    plugins:
+      process.env.ALLOW_GUEST === 'true'
+        ? [
+            anonymous({
+              onLinkAccount: async ({ anonymousUser, newUser }) => {
+                await transferAnonymousUserResources(
+                  anonymousUser.user.id,
+                  newUser.user.id,
+                );
+              },
+            }),
+          ]
+        : [],
     // Trust the proxy (Vercel) for IP/User-Agent in session
     trustedOrigins: [
       process.env.BETTER_AUTH_URL ?? 'http://localhost:3000',

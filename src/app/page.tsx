@@ -27,22 +27,12 @@ const DEV_USER = {
   updatedAt: new Date(),
 };
 
-const GUEST_USER = {
-  id: 'guest-00000000-0000-4000-a000-000000000001' as string,
-  email: 'guest@text-to-sql.demo',
-  name: 'Guest',
-  emailVerified: true,
-  image: null as string | null,
-  createdAt: new Date(),
-  updatedAt: new Date(),
-};
-
 export default function Home() {
   const router = useRouter();
   const { data: session, isPending } = useSession();
   const [loggingOut, setLoggingOut] = useState(false);
 
-  // Dev / Guest bypass state
+  // Local dev bypass state
   const [bypassSession, setBypassSession] = useState<{
     user: typeof DEV_USER;
   } | null>(null);
@@ -62,7 +52,7 @@ export default function Home() {
   const [dtPanelOpen, setDtPanelOpen] = useState(false);
   const [dtDataSourceId, setDtDataSourceId] = useState<string>('');
 
-  // ─── Auth guard (dev mode > guest mode > login) ────────
+  // ─── Auth guard (local dev mode or real auth) ──────────
   useEffect(() => {
     if (!isPending && !session) {
       fetch('/api/dev-check')
@@ -70,8 +60,6 @@ export default function Home() {
         .then((data) => {
           if (data.devMode) {
             setBypassSession({ user: DEV_USER });
-          } else if (data.guestMode) {
-            setBypassSession({ user: GUEST_USER });
           } else {
             router.replace('/login');
           }
@@ -81,7 +69,7 @@ export default function Home() {
     }
   }, [session, isPending, router]);
 
-  // Effective session (real, dev, or guest)
+  // Effective session (real auth, anonymous auth, or local dev)
   const effectiveSession = session ?? bypassSession;
 
   // ─── Load conversation list ─────────────────────────────

@@ -138,6 +138,19 @@ describe('validateSql — syntax errors', () => {
       expect(result.code).toBe('SYNTAX_ERROR');
     }
   });
+
+  it('accepts null_count instead of the parser-reserved nulls alias', () => {
+    const rejected = validateSql('SELECT COUNT(*) AS nulls FROM customers');
+    const accepted = validateSql(
+      'SELECT COUNT(*) AS null_count FROM customers',
+    );
+
+    expect(rejected.valid).toBe(false);
+    if (!rejected.valid) {
+      expect(rejected.code).toBe('SYNTAX_ERROR');
+    }
+    expect(accepted.valid).toBe(true);
+  });
 });
 
 describe('validateSql — AST-level defense (not just regex)', () => {
@@ -199,6 +212,106 @@ describe('validateSql — data-modifying CTE bypass (regression)', () => {
       'WITH monthly AS (SELECT 1 AS n) SELECT * FROM monthly',
     );
     expect(result.valid).toBe(true);
+  });
+});
+
+describe('validateSql — data source table allowlist', () => {
+  const accessScope = {
+    schema: 'userdata',
+    tables: ['ds_owned'],
+  } as const;
+
+  it('accepts the owned table with qualified or unqualified names', () => {
+    expect(validateSql('SELECT * FROM ds_owned', accessScope).valid).toBe(true);
+    expect(
+      validateSql('SELECT * FROM userdata."ds_owned"', accessScope).valid,
+    ).toBe(true);
+  });
+
+  it('rejects another table in the same schema', () => {
+    const result = validateSql(
+      'SELECT * FROM userdata."ds_other_user"',
+      accessScope,
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects the same table name from another schema', () => {
+    expect(
+      validateSql('SELECT * FROM public.ds_owned', accessScope).valid,
+    ).toBe(false);
+  });
+
+  it('rejects a JOIN when any physical table is not allowed', () => {
+    expect(
+      validateSql(
+        'SELECT * FROM ds_owned o JOIN ds_other_user x ON true',
+        accessScope,
+      ).valid,
+    ).toBe(false);
+  });
+
+  it('rejects an unauthorized table hidden in a subquery or UNION', () => {
+    expect(
+      validateSql(
+        'SELECT * FROM ds_owned WHERE EXISTS (SELECT 1 FROM ds_other_user)',
+        accessScope,
+      ).valid,
+    ).toBe(false);
+    expect(
+      validateSql(
+        'SELECT * FROM ds_owned UNION SELECT * FROM ds_other_user',
+        accessScope,
+      ).valid,
+    ).toBe(false);
+  });
+
+  it('accepts CTE aliases whose physical source is allowed', () => {
+    expect(
+      validateSql(
+        'WITH scoped AS (SELECT * FROM ds_owned) SELECT * FROM scoped',
+        accessScope,
+      ).valid,
+    ).toBe(true);
+  });
+
+  it('rejects a CTE whose physical source is not allowed', () => {
+    expect(
+      validateSql(
+        'WITH hidden AS (SELECT * FROM ds_other_user) SELECT * FROM hidden',
+        accessScope,
+      ).valid,
+    ).toBe(false);
+  });
+
+  it('does not leak a nested CTE alias into an outer query scope', () => {
+    expect(
+      validateSql(
+        `SELECT * FROM ds_owned
+         WHERE EXISTS (
+           WITH ds_other_user AS (SELECT * FROM ds_owned)
+           SELECT * FROM ds_other_user
+         )
+         UNION SELECT * FROM ds_other_user`,
+        accessScope,
+      ).valid,
+    ).toBe(false);
+  });
+
+  it('rejects PostgreSQL functions that execute SQL hidden in string literals', () => {
+    expect(
+      validateSql(
+        "SELECT query_to_xml('SELECT * FROM userdata.ds_other_user', true, true, '')",
+        accessScope,
+      ).valid,
+    ).toBe(false);
+    expect(
+      validateSql(
+        "SELECT table_to_xml('userdata.ds_other_user', true, false, '')",
+        accessScope,
+      ).valid,
+    ).toBe(false);
   });
 });
 
