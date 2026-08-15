@@ -1,5 +1,7 @@
 # 数据问答 Agent · Text-to-SQL Data Q&A Agent
 
+**简体中文** · [English](README.en.md)
+
 [![CI](https://github.com/LeoGGG1234/text-to-sql-agent/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/LeoGGG1234/text-to-sql-agent/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Vercel-000000?logo=vercel)](https://text-to-sql-agent-staging.vercel.app)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs)](https://nextjs.org/)
@@ -143,7 +145,7 @@ Eval 用例覆盖 5 个类别（simple / aggregation / join / time_series / mult
 | TypeScript | passed | `tsc --noEmit` |
 | ESLint | passed | `eslint . --max-warnings=0`，可在 CI 非交互运行 |
 | Production build | passed | Next.js production build |
-| Security integration | [2 passed（GitHub Actions）](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31881799355) | 使用独立 disposable Neon 数据库；验证 Guest/ownership transfer 与物理表 allowlist |
+| Security integration | [2 passed（GitHub Actions）](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31883750479) | 使用独立 disposable Neon 数据库；验证 Guest/ownership transfer 与物理表 allowlist |
 | Deployment readiness | passed（staging） | 检查 Guest migration、只读角色属性及 userdata schema/table 权限 |
 
 > `eval/` 中保留的 2026-06 报告是早期基线，不代表当前 hardened 版本。运行 `npm run eval` 会生成带时间戳的 JSON 与 Markdown 报告，避免用旧指标包装新实现。可用 `--prompt-variant v2` 或 `--prompt-variant v4` 做显式 A/B。
