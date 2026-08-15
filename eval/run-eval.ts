@@ -3,7 +3,8 @@
  * Eval Runner — measures Text-to-SQL agent accuracy.
  *
  * Usage:
- *   npx tsx eval/run-eval.ts [--provider deepseek] [--model ...] [--limit 5]
+ *   npx tsx eval/run-eval.ts [--provider deepseek] [--model ...]
+ *     [--prompt-variant v4] [--limit 5]
  *
  * Requires:
  *   - The dev server running (default http://localhost:3000)
@@ -65,6 +66,7 @@ async function main() {
   const args = process.argv.slice(2);
   const provider = getArg(args, '--provider', 'deepseek');
   const model = getArg(args, '--model', '');
+  const promptVariant = getArg(args, '--prompt-variant', '');
   const limit = parseInt(getArg(args, '--limit', '0'), 10);
   const baseUrl = process.env.EVAL_API_URL ?? 'http://localhost:3000';
 
@@ -82,6 +84,7 @@ async function main() {
 
   console.log(`\n🧪 Text-to-SQL Agent Eval\n`);
   console.log(`   Provider: ${provider}   Model: ${model || 'default'}`);
+  console.log(`   Prompt: ${promptVariant || 'default'}`);
   console.log(`   API: ${baseUrl}   Tests: ${selected.length}\n`);
 
   const results: CaseResult[] = [];
@@ -99,6 +102,7 @@ async function main() {
           messages: [{ role: 'user', content: tc.question }],
           provider,
           model: model || undefined,
+          promptVariant: promptVariant || undefined,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 150)}`);
@@ -163,7 +167,7 @@ async function main() {
     }
   }
 
-  writeReports(results, provider, model);
+  writeReports(results, provider, model, promptVariant);
 }
 
 // ─── Stream parsing ──────────────────────────────────────────────
@@ -194,13 +198,21 @@ function extractLastRunSql(stream: string): string | null {
 
 // ─── Reporting ───────────────────────────────────────────────────
 
-function writeReports(results: CaseResult[], provider: string, model: string) {
+function writeReports(
+  results: CaseResult[],
+  provider: string,
+  model: string,
+  promptVariant: string,
+) {
   const agg = aggregate(results);
   const byCat: Record<string, CaseResult[]> = {};
   for (const r of results) (byCat[r.category] ??= []).push(r);
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const slug = provider.replace(/[^a-z0-9]/g, '-');
+  const slug = [provider, promptVariant]
+    .filter(Boolean)
+    .join('-')
+    .replace(/[^a-z0-9]/g, '-');
 
   fs.writeFileSync(
     path.join(__dirname, `results-${slug}-${ts}.json`),
@@ -210,7 +222,7 @@ function writeReports(results: CaseResult[], provider: string, model: string) {
   const lines: string[] = [
     `# Text-to-SQL Agent Eval Report`,
     ``,
-    `**Provider**: ${provider}　**Model**: ${model || 'default'}　**Date**: ${new Date().toISOString()}`,
+    `**Provider**: ${provider}　**Model**: ${model || 'default'}　**Prompt**: ${promptVariant || 'default'}　**Date**: ${new Date().toISOString()}`,
     ``,
     `## Overall`,
     ``,
@@ -245,7 +257,9 @@ function writeReports(results: CaseResult[], provider: string, model: string) {
   fs.writeFileSync(reportPath, lines.join('\n'));
 
   console.log(`\n${'═'.repeat(56)}`);
-  console.log(`📊 ${provider}/${model || 'default'}`);
+  console.log(
+    `📊 ${provider}/${model || 'default'} (prompt=${promptVariant || 'default'})`,
+  );
   console.log(`   Validity:    ${(agg.validityRate * 100).toFixed(1)}%`);
   console.log(`   Exec acc:    ${(agg.execAccuracy * 100).toFixed(1)}%`);
   console.log(`   Schema adh:  ${(agg.schemaAdherence * 100).toFixed(1)}%`);

@@ -24,4 +24,20 @@ describe('system prompt recovery rules', () => {
     expect(prompt).toContain('dirty rows');
     expect(prompt).toContain('plus clean rows equals total rows');
   });
+
+  it('offers an eval variant that matches the requested result granularity', () => {
+    const prompt = getSystemPrompt('v4', 'example schema');
+
+    expect(prompt).toContain('Match the requested granularity exactly');
+    expect(prompt).toContain('LIMIT 1');
+    expect(prompt).toContain('Do not add a GROUP BY');
+    expect(prompt).toContain('Do not add filters');
+    expect(prompt).toContain('smallest result set');
+  });
+
+  it('uses the eval-improved result-shape rules by default', () => {
+    expect(getSystemPrompt(undefined, 'example schema')).toContain(
+      'Match the requested granularity exactly',
+    );
+  });
 });

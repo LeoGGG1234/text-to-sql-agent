@@ -1,10 +1,29 @@
 # 数据问答 Agent · Text-to-SQL Data Q&A Agent
 
+[![CI](https://github.com/LeoGGG1234/text-to-sql-agent/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/LeoGGG1234/text-to-sql-agent/actions/workflows/ci.yml)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Vercel-000000?logo=vercel)](https://text-to-sql-agent-staging.vercel.app)
+[![Next.js 15](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+
 > 用自然语言查询企业数据库 —— Agent 自动生成 PostgreSQL、在**只读沙箱**中安全执行、自我纠错，并把结果可视化。
 
 一个面向企业数据分析场景的 AI Agent：业务人员用中文/英文提问（"上季度营收最高的 5 个产品？"），Agent 生成 SQL、安全执行、画成图表，并给出自然语言结论。
 
-**核心看点是工程安全性**：LLM 生成的 SQL 经过三层纵深防御，保证永远只能读、不能写、不能拖垮数据库。
+**核心看点是工程安全性**：LLM 生成的 SQL 默认不可信；应用用三层纵深防御把执行约束为只读，并限制慢查询与跨数据源访问。
+
+**[在线体验](https://text-to-sql-agent-staging.vercel.app)** · **[查看 CI](https://github.com/LeoGGG1234/text-to-sql-agent/actions/workflows/ci.yml)** · **[工程案例](docs/PORTFOLIO_CASE_STUDY.md)**
+
+![Text-to-SQL Agent 在线 Demo](docs/assets/demo-home.jpg)
+
+## 🎯 30 秒体验
+
+打开在线 Demo 后，无需注册即可使用隔离的匿名会话。可以直接尝试：
+
+- `营收最高的 5 个产品是哪些？`
+- `2025 年每月的销售趋势如何？`
+- `各个地区的销售额占比是多少？`
+
+Agent 会展示实际执行的 SQL、查询结果和图表；每个匿名访客、会话和上传数据源都经过 ownership 校验与租户隔离。
 
 ---
 
@@ -33,20 +52,22 @@ streamText (maxSteps: 5)  +  3 Tools
     ├── getSchema   → 返回库结构（供 LLM 自查/纠错）
     └── renderChart → 输出图表 spec（前端 Recharts 渲染）
     ↓
-只读零售数据库 (Neon Postgres · retail_readonly 角色)
+已授权数据源
+    ├── 零售 Demo (Neon Postgres · retail_readonly)
+    └── 用户上传表 (userdata schema · userdata_readonly + table allowlist)
 ```
 
 ## 🛡️ SQL 安全层（项目核心）
 
-LLM 生成的 SQL 默认不可信。本项目用**三层纵深防御**确保它永远只能安全地读：
+LLM 生成的 SQL 默认不可信。本项目用**三层纵深防御**约束其只读执行，并让数据库权限成为最终防线：
 
 | 层 | 机制 | 防住什么 |
 |----|------|----------|
-| **1. 数据库角色** | `retail_readonly` 角色只有 `SELECT` 授权，`REVOKE` 掉所有写权限 | 即使前两层全部失效，数据库本身拒绝任何写操作 |
+| **1. 数据库角色** | `retail_readonly` / `userdata_readonly` 角色只有目标表的 `SELECT` 授权，并撤销高权限与 schema 创建权限 | 即使应用校验失效，数据库仍拒绝未授权写操作 |
 | **2. AST 校验** | `node-sql-parser` 解析成 AST：必须是单条 `SELECT`，且**逐操作校验 `tableList`**（防数据修改 CTE 绕过），拒绝多语句/注释/`SELECT INTO`/系统表/危险函数，并强制注入 `LIMIT 1000` | 注入、写操作（含 CTE 内写）、数据泄露、拖库 |
 | **3. 语句超时** | 角色级 `statement_timeout = 5s` + JS 侧超时兜底 | 笛卡尔积、慢查询拖垮数据库 |
 
-校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)，覆盖 **155 个单元测试**（写操作/DDL/注入/多语句/数据修改 CTE 绕过/LIMIT 边界全部验证被拒）。
+校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)。仓库当前共有 **202 个单元/回归测试**，其中 **61 个**聚焦 SQL validator（写操作/DDL/注入/多语句/数据修改 CTE 绕过/LIMIT 边界等）。另有 2 个连接一次性 Postgres 的安全集成测试，验证 Guest/ownership transfer 和物理表 allowlist。
 
 > **一个真实的对抗性发现**：最初的校验只判断 `stmt.type === 'select'`，但 PostgreSQL 的数据修改 CTE（`WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t`）顶层仍报告为 `select`，可绕过该检查。修复方式是逐一校验 `tableList` 中每个操作都是 `select`，并补上回归测试锁死。这也印证了第 1 层只读角色作为纵深防御的价值——校验层被绕过时数据库本身仍会拒绝写入。
 
@@ -106,6 +127,26 @@ npm run eval         # 端到端：20 个 NL→SQL 用例，输出执行准确�
 ```
 
 Eval 用例覆盖 5 个类别（simple / aggregation / join / time_series / multi_step），中英双语。指标：**执行准确率**（生成 SQL 的结果集与参考答案比对）、**有效率**、**Schema 遵循度**。
+
+一次 20-case、同模型的 prompt A/B snapshot（2026-08-15）中，精确结果集执行准确率从默认 v2 的 **40%** 提升到 v4 的 **60%**，Validity 和 Schema adherence 都保持 **100%**。v4 因此成为当前默认 prompt；原始结果与失败用例均保留，便于复核，而不是只展示汇总数字：
+
+- [v2 报告](eval/report-deepseek-2026-08-15T11-35-33-177Z.md) / [原始 JSON](eval/results-deepseek-2026-08-15T11-35-33-177Z.json)
+- [v4 报告](eval/report-deepseek-v4-2026-08-15T11-40-50-855Z.md) / [原始 JSON](eval/results-deepseek-v4-2026-08-15T11-40-50-855Z.json)
+
+> 这是一次小样本工程回归，不是统计显著性结论。当前严格评分会把“正确答案 + 额外上下文字段”判为不完全匹配，因此 60% 不等同于人工语义正确率；项目刻意保留这一保守口径。
+
+### 当前验证证据
+
+| 验证项 | 当前状态 | 说明 |
+|--------|----------|------|
+| Unit / regression tests | 202 passed | 不连接外部数据库 |
+| TypeScript | passed | `tsc --noEmit` |
+| ESLint | passed | `eslint . --max-warnings=0`，可在 CI 非交互运行 |
+| Production build | passed | Next.js production build |
+| Security integration | [2 passed（GitHub Actions）](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31881799355) | 使用独立 disposable Neon 数据库；验证 Guest/ownership transfer 与物理表 allowlist |
+| Deployment readiness | passed（staging） | 检查 Guest migration、只读角色属性及 userdata schema/table 权限 |
+
+> `eval/` 中保留的 2026-06 报告是早期基线，不代表当前 hardened 版本。运行 `npm run eval` 会生成带时间戳的 JSON 与 Markdown 报告，避免用旧指标包装新实现。可用 `--prompt-variant v2` 或 `--prompt-variant v4` 做显式 A/B。
 
 ### 安全部署验证
 

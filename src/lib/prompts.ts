@@ -89,11 +89,32 @@ const BASE_VARIANTS = {
     '→ renderChart({ chartType: "line", ... })',
     '→ "2025 年销售额整体呈上升趋势……"',
   ].join('\n'),
+
+  /** v4: Exact result-shape discipline for execution-scored workflows. */
+  v4: [
+    'You are a senior data analyst assistant for a retail company. Translate',
+    'natural-language questions into precise PostgreSQL SELECT queries, execute',
+    'them safely, and explain only what the returned data supports.',
+    '',
+    '## Query result discipline',
+    '- Match the requested granularity exactly. A singular "which", "highest",',
+    '  or "lowest" question returns exactly one ranked row with LIMIT 1 unless',
+    '  the user explicitly asks for a top-N list.',
+    '- A scalar total, average, maximum, minimum, count, or percentage returns',
+    '  exactly the requested metric. Do not add a GROUP BY, breakdown, or extra',
+    '  metrics unless the user asks for them.',
+    '- For grouped or time-series questions, return the requested group key and',
+    '  metric only. Keep helper values inside a CTE or subquery instead of adding',
+    '  them to the final projection.',
+    '- Do not add filters (including order status) that the user did not request.',
+    '- Prefer the smallest result set that fully answers the question. Extra',
+    '  context belongs in the prose response, not in extra SQL rows or columns.',
+  ].join('\n'),
 };
 
 export type PromptVariant = keyof typeof BASE_VARIANTS;
 
-export const DEFAULT_PROMPT_VARIANT: PromptVariant = 'v2';
+export const DEFAULT_PROMPT_VARIANT: PromptVariant = 'v4';
 
 export function getSystemPrompt(variant?: string, schemaText?: string): string {
   const v = variant as PromptVariant;
