@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CleaningRecipe, CleaningSummary } from '@/lib/data-sources/cleaning-types';
 import type { QualityProfile } from '@/lib/data-sources/types';
+import type { ColumnMeta } from './data-table';
+import { CleaningPolicyBuilder } from './cleaning-policy-builder';
 
 interface CleaningRun {
   id: string;
@@ -21,11 +23,41 @@ interface Preview {
 
 interface Props {
   dataSourceId: string;
+  columns: ColumnMeta[];
+  exporting: boolean;
   onClose: () => void;
   onApplied: () => void;
+  onExport: () => void;
 }
 
-export function CleaningPanel({ dataSourceId, onClose, onApplied }: Props) {
+type CleaningStep = CleaningRecipe['steps'][number];
+
+const FAILURE_LABELS: Record<CleaningSummary['parseFailureSamples'][number]['reason'], string> = {
+  invalid_numeric: 'Invalid numeric value',
+  invalid_or_ambiguous_date: 'Invalid or ambiguous date',
+  invalid_boolean: 'Invalid boolean value',
+};
+
+function previewValue(value: string | null): string {
+  return value == null ? 'NULL' : JSON.stringify(value);
+}
+
+function stepPolicy(step: CleaningStep): string | null {
+  if (step.type === 'normalize_numeric') {
+    const percentage = step.percentageMode === 'decimal' ? 'percent → decimal' : 'percent sign removed';
+    const failure = step.onError === 'set_null' ? 'failures → NULL' : 'failures kept';
+    return `${percentage}; ${failure}`;
+  }
+  if (step.type === 'normalize_boolean') {
+    const failure = step.onError === 'set_null' ? 'unknown values → NULL' : 'unknown values kept';
+    return `true/yes/y/1 → true; false/no/n/0 → false; ${failure}`;
+  }
+  if (step.type === 'normalize_date') return 'ambiguous or invalid dates kept';
+  if (step.type === 'drop_duplicates') return step.keys?.length ? 'selected keys' : 'exact full-row matches';
+  return null;
+}
+
+export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApplied, onExport }: Props) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [history, setHistory] = useState<CleaningRun[]>([]);
   const [loading, setLoading] = useState(false);
@@ -49,46 +81,60 @@ export function CleaningPanel({ dataSourceId, onClose, onApplied }: Props) {
     return () => controller.abort();
   }, [loadHistory]);
 
-  async function createPreview(preset: 'conservative' | 'standard' | 'aggressive') {
+  async function requestPreview(payload: { preset: 'conservative' | 'standard' | 'aggressive' } | { recipe: CleaningRecipe }) {
     setLoading(true);
     setError(null);
     setValidation(null);
-    const res = await fetch(`/api/data-sources/${dataSourceId}/cleaning/preview`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preset }),
-    });
-    const body = await res.json();
-    setLoading(false);
-    if (!res.ok) {
-      setError(body.error ?? 'Cleaning preview failed.');
-      return;
+    setPreview(null);
+    try {
+      const res = await fetch(`/api/data-sources/${dataSourceId}/cleaning/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error ?? 'Cleaning preview failed.');
+        return;
+      }
+      setPreview(body);
+      await loadHistory();
+    } catch {
+      setError('Cleaning preview failed.');
+    } finally {
+      setLoading(false);
     }
-    setPreview(body);
-    await loadHistory();
   }
+
+  const createPreview = (preset: 'conservative' | 'standard' | 'aggressive') =>
+    requestPreview({ preset });
 
   async function applyPreview() {
     if (!preview || !window.confirm(`Apply this recipe to ${preview.summary.affectedRows} affected rows?`)) return;
     setApplying(true);
     setError(null);
-    const res = await fetch(`/api/data-sources/${dataSourceId}/cleaning/apply`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId: preview.runId }),
-    });
-    const body = await res.json();
-    setApplying(false);
-    if (!res.ok) {
-      setError(body.error ?? 'Cleaning apply failed.');
-      return;
+    try {
+      const res = await fetch(`/api/data-sources/${dataSourceId}/cleaning/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: preview.runId }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error ?? 'Cleaning apply failed.');
+        return;
+      }
+      setPreview(null);
+      if (body.beforeProfile?.table && body.afterProfile?.table) {
+        setValidation({ before: body.beforeProfile, after: body.afterProfile });
+      }
+      await loadHistory();
+      onApplied();
+    } catch {
+      setError('Cleaning apply failed.');
+    } finally {
+      setApplying(false);
     }
-    setPreview(null);
-    if (body.beforeProfile?.table && body.afterProfile?.table) {
-      setValidation({ before: body.beforeProfile, after: body.afterProfile });
-    }
-    await loadHistory();
-    onApplied();
   }
 
   return (
@@ -116,9 +162,15 @@ export function CleaningPanel({ dataSourceId, onClose, onApplied }: Props) {
             ))}
           </div>
           <p className="mt-2 text-[10px] text-zinc-600">
-            Aggressive may convert numeric parse failures to NULL. The exact recipe is shown before apply.
+            Standard and Aggressive convert percentages to decimals. Standard keeps unresolved values; Aggressive converts numeric and boolean failures to NULL. Dates are never guessed.
           </p>
         </section>
+
+        <CleaningPolicyBuilder
+          columns={columns}
+          disabled={loading || applying}
+          onPreview={(recipe) => void requestPreview({ recipe })}
+        />
 
         {error && <div className="rounded border border-red-800/40 bg-red-950/30 p-2 text-red-300">{error}</div>}
         {loading && <div className="text-zinc-500">Computing full-table preview...</div>}
@@ -134,6 +186,7 @@ export function CleaningPanel({ dataSourceId, onClose, onApplied }: Props) {
                 <li key={`${step.type}-${index}`}>
                   <code>{step.type}</code>{' '}
                   {'columns' in step ? step.columns.join(', ') : step.type === 'fill_missing' ? step.column : step.keys?.join(', ') ?? 'all columns'}
+                  {stepPolicy(step) ? <span className="block text-[10px] text-zinc-600">{stepPolicy(step)}</span> : null}
                 </li>
               ))}
             </ol>
@@ -142,17 +195,37 @@ export function CleaningPanel({ dataSourceId, onClose, onApplied }: Props) {
               <span>Affected cells: <b className="text-zinc-100">{preview.summary.affectedCells}</b></span>
               <span>Removed rows: <b className="text-zinc-100">{preview.summary.removedRows}</b></span>
               <span>Parse failures: <b className="text-zinc-100">{preview.summary.parseFailures}</b></span>
+              <span>Generated NULLs: <b className="text-zinc-100">{preview.summary.generatedNulls}</b></span>
+              <span>Output rows: <b className="text-zinc-100">{preview.summary.outputRows}</b></span>
             </div>
             {preview.summary.samples.length > 0 && (
               <div className="max-h-40 overflow-auto rounded border border-zinc-800">
                 {preview.summary.samples.map((sample, index) => (
                   <div key={`${sample.rowId}-${sample.column}-${index}`} className="border-b border-zinc-800 px-2 py-1 last:border-0">
                     <span className="text-zinc-600">#{sample.rowId} {sample.column}: </span>
-                    <span className="text-red-300">{sample.before ?? 'NULL'}</span>
+                    <code className="whitespace-pre-wrap break-all text-red-300">{previewValue(sample.before)}</code>
                     <span className="text-zinc-600"> → </span>
-                    <span className="text-emerald-300">{sample.after ?? 'NULL'}</span>
+                    <code className="whitespace-pre-wrap break-all text-emerald-300">{previewValue(sample.after)}</code>
                   </div>
                 ))}
+              </div>
+            )}
+            {preview.summary.parseFailures > 0 && (
+              <div className="rounded border border-amber-800/50 bg-amber-950/20 p-2">
+                <div className="mb-1 font-medium text-amber-300">Unresolved parse failures</div>
+                {(preview.summary.parseFailureSamples ?? []).length > 0 ? (
+                  <div className="space-y-1">
+                    {(preview.summary.parseFailureSamples ?? []).map((failure, index) => (
+                      <div key={`${failure.rowId}-${failure.column}-${index}`}>
+                        <span className="text-zinc-500">#{failure.rowId} {failure.column}: </span>
+                        <code className="whitespace-pre-wrap break-all text-amber-200">{previewValue(failure.value)}</code>
+                        <span className="text-zinc-600"> · {FAILURE_LABELS[failure.reason]}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-zinc-500">Failure details are unavailable for this older preview.</p>
+                )}
               </div>
             )}
             <button
@@ -178,6 +251,14 @@ export function CleaningPanel({ dataSourceId, onClose, onApplied }: Props) {
                 {validation.before.table.columnsWithIssues} → {validation.after.table.columnsWithIssues}
               </span>
             </div>
+            <button
+              type="button"
+              onClick={onExport}
+              disabled={exporting}
+              className="mt-3 w-full rounded border border-emerald-800/50 bg-emerald-950/30 px-3 py-2 font-medium text-emerald-300 hover:bg-emerald-900/30 disabled:opacity-50"
+            >
+              {exporting ? 'Exporting...' : 'Export applied CSV'}
+            </button>
           </section>
         )}
 

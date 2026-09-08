@@ -64,10 +64,19 @@ test('stale profile can be refreshed and cleaning requires preview before apply'
   } }));
   await page.route('**/api/data-sources/ds-meta-1/profile', (route) => route.fulfill({ json: { profileStatus: 'fresh' } }));
   await page.route('**/api/data-sources/ds-meta-1/cleaning-runs', (route) => route.fulfill({ json: { runs: applied ? [{ id: 'run-1', recipe: { name: 'Standard preset', steps: [] }, previewSummary: { affectedRows: 1 }, status: 'applied', createdAt: '2026-09-08T00:00:00.000Z', appliedAt: '2026-09-08T00:01:00.000Z' }] : [] } }));
-  await page.route('**/api/data-sources/ds-meta-1/cleaning/preview', (route) => route.fulfill({ json: {
-    runId: 'run-1', recipe: { name: 'Standard preset', steps: [{ type: 'normalize_whitespace', columns: ['customer'] }] },
-    summary: { inputRows: 2, outputRows: 2, affectedRows: 1, affectedCells: 1, removedRows: 0, generatedNulls: 0, parseFailures: 0, samples: [{ rowId: 1, column: 'customer', before: ' A ', after: 'A' }] },
-  } }));
+  await page.route('**/api/data-sources/ds-meta-1/cleaning/preview', (route) => {
+    const requestBody = route.request().postDataJSON() as { recipe?: { name: string; steps: unknown[] } };
+    return route.fulfill({ json: {
+      runId: 'run-1', recipe: requestBody.recipe ?? { name: 'Standard preset', steps: [{ type: 'normalize_whitespace', columns: ['customer'] }] },
+      summary: { inputRows: 2, outputRows: 2, affectedRows: 1, affectedCells: 1, removedRows: 0, generatedNulls: 0, parseFailures: 1, parseFailureSamples: [{ rowId: 2, column: 'amount', value: 'bad%', reason: 'invalid_numeric' }], samples: [{ rowId: 1, column: 'customer', before: ' A ', after: 'A' }] },
+    } });
+  });
+  await page.route('**/api/data-sources/ds-meta-1/export', (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/csv; charset=utf-8',
+    headers: { 'Content-Disposition': "attachment; filename=\"data-export.csv\"; filename*=UTF-8''orders-export.csv" },
+    body: 'Customer,Amount\r\nA,10\r\n',
+  }));
   await page.route('**/api/data-sources/ds-meta-1/cleaning/apply', (route) => {
     applied = true;
     return route.fulfill({ json: {
@@ -84,14 +93,23 @@ test('stale profile can be refreshed and cleaning requires preview before apply'
   await expect(page.getByText(/Quality profile is stale/)).toBeVisible();
   await page.getByRole('button', { name: 'View Data' }).click();
   await expect(page.getByText('profile stale')).toBeVisible();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export CSV' }).click();
+  expect((await downloadPromise).suggestedFilename()).toBe('orders-export.csv');
   await page.getByRole('button', { name: 'Re-profile' }).click();
   await expect(page.getByText('profile fresh')).toBeVisible();
   await page.getByRole('button', { name: 'Clean Data' }).click();
   await expect(page.getByRole('button', { name: 'Apply reviewed recipe' })).toBeHidden();
+  await page.getByRole('button', { name: 'Add rule' }).click();
+  await page.getByRole('button', { name: 'Preview custom recipe' }).click();
+  await expect(page.getByText('Custom policy', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'standard' }).click();
   await expect(page.getByText('Affected rows:')).toBeVisible();
+  await expect(page.getByText('Unresolved parse failures')).toBeVisible();
+  await expect(page.getByText('Invalid numeric value')).toBeVisible();
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: 'Apply reviewed recipe' }).click();
   await expect(page.getByText('Post-clean validation')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Export applied CSV' })).toBeVisible();
   await expect(page.getByText('Standard preset')).toBeVisible();
 });

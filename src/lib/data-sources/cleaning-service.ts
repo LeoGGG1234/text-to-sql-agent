@@ -19,13 +19,14 @@ export function cleaningSelectList(table: DiscoveredTable): string {
 export async function loadCleaningRows(
   connectionString: string,
   table: DiscoveredTable,
+  operationLabel = 'Cleaning',
 ): Promise<CleaningRow[]> {
   const sql = neon(connectionString);
   const [count] = (await sql.query(
     `SELECT COUNT(*)::int AS count FROM userdata.${quoteIdent(table.name)}`,
   )) as Array<{ count: number }>;
   if (Number(count?.count ?? 0) > MAX_CLEANING_ROWS) {
-    throw new Error(`Cleaning is limited to ${MAX_CLEANING_ROWS.toLocaleString()} rows per run.`);
+    throw new Error(`${operationLabel} is limited to ${MAX_CLEANING_ROWS.toLocaleString()} rows per run.`);
   }
   return (await sql.query(
     `SELECT ${cleaningSelectList(table)} FROM userdata.${quoteIdent(table.name)} ORDER BY _row_id`,

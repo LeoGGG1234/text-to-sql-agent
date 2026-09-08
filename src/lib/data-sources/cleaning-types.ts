@@ -18,6 +18,13 @@ export const cleaningStepSchema = z.discriminatedUnion('type', [
     onError: z.enum(['keep_original', 'set_null']).default('keep_original'),
   }),
   z.object({
+    type: z.literal('normalize_boolean'),
+    columns,
+    trueValues: z.array(z.string().min(1)).min(1).max(20),
+    falseValues: z.array(z.string().min(1)).min(1).max(20),
+    onError: z.enum(['keep_original', 'set_null']).default('keep_original'),
+  }),
+  z.object({
     type: z.literal('normalize_date'),
     columns,
     onAmbiguous: z.literal('keep_original').default('keep_original'),
@@ -52,6 +59,13 @@ export interface CleaningDiffSample {
   after: string | null;
 }
 
+export interface CleaningParseFailureSample {
+  rowId: number;
+  column: string;
+  value: string;
+  reason: 'invalid_numeric' | 'invalid_or_ambiguous_date' | 'invalid_boolean';
+}
+
 export interface CleaningSummary {
   inputRows: number;
   outputRows: number;
@@ -60,5 +74,6 @@ export interface CleaningSummary {
   removedRows: number;
   generatedNulls: number;
   parseFailures: number;
+  parseFailureSamples: CleaningParseFailureSample[];
   samples: CleaningDiffSample[];
 }

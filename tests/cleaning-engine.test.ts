@@ -9,6 +9,7 @@ const table: DiscoveredTable = {
     { name: 'name', displayName: 'Name', type: 'TEXT', semanticType: 'TEXT', nullable: false, hint: null },
     { name: 'amount', displayName: 'Amount', type: 'TEXT', semanticType: 'NUMERIC', nullable: true, hint: null },
     { name: 'date', displayName: 'Date', type: 'TEXT', semanticType: 'DATE', nullable: true, hint: null },
+    { name: 'priority', displayName: 'Priority', type: 'TEXT', semanticType: 'BOOLEAN', nullable: true, hint: null },
   ],
 };
 
@@ -25,7 +26,17 @@ describe('deterministic cleaning engine', () => {
     ], table, recipe);
     expect(result.rows[0]).toMatchObject({ name: 'Apple Inc', amount: '1230', date: '2026-09-08' });
     expect(result.rows[1]).toMatchObject({ amount: '0.125', date: '09/08/2026' });
-    expect(result.summary).toMatchObject({ affectedRows: 2, affectedCells: 4, parseFailures: 1 });
+    expect(result.summary).toMatchObject({
+      affectedRows: 2,
+      affectedCells: 4,
+      parseFailures: 1,
+      parseFailureSamples: [{
+        rowId: 2,
+        column: 'date',
+        value: '09/08/2026',
+        reason: 'invalid_or_ambiguous_date',
+      }],
+    });
   });
 
   it('drops exact duplicates while preserving the first physical row', () => {
@@ -39,7 +50,61 @@ describe('deterministic cleaning engine', () => {
 
   it('makes aggressive parse-null behavior explicit in the recipe', () => {
     const recipe = buildPresetRecipe(table, 'aggressive');
-    expect(recipe.steps).toContainEqual(expect.objectContaining({ type: 'normalize_numeric', onError: 'set_null' }));
+    expect(recipe.steps).toContainEqual(expect.objectContaining({
+      type: 'normalize_numeric', percentageMode: 'decimal', onError: 'set_null',
+    }));
+    expect(recipe.steps).toContainEqual(expect.objectContaining({
+      type: 'normalize_boolean', onError: 'set_null',
+    }));
+  });
+
+  it('normalizes percentage and boolean variants before exact deduplication', () => {
+    const result = executeCleaningRecipe([
+      { _row_id: 1, name: 'Acme', amount: '15%', date: '2026/9/8', priority: 'Y' },
+      { _row_id: 2, name: 'Acme', amount: '0.15', date: '2026-09-08', priority: 'true' },
+    ], table, buildPresetRecipe(table, 'standard'));
+
+    expect(result.rows).toEqual([
+      { _row_id: 1, name: 'Acme', amount: '0.15', date: '2026-09-08', priority: 'true' },
+    ]);
+    expect(result.summary).toMatchObject({ outputRows: 1, removedRows: 1, parseFailures: 0 });
+  });
+
+  it('keeps standard parse failures, exposes samples, and lets aggressive null numeric and boolean failures', () => {
+    const input = [
+      { _row_id: 1, name: 'Acme', amount: 'bad%', date: '09/08/2026', priority: 'UNKNOWN' },
+    ];
+    const standard = executeCleaningRecipe(input, table, buildPresetRecipe(table, 'standard'));
+    expect(standard.rows[0]).toMatchObject({ amount: 'bad%', date: '09/08/2026', priority: 'UNKNOWN' });
+    expect(standard.summary).toMatchObject({
+      parseFailures: 3,
+      generatedNulls: 0,
+      parseFailureSamples: [
+        { rowId: 1, column: 'amount', value: 'bad%', reason: 'invalid_numeric' },
+        { rowId: 1, column: 'date', value: '09/08/2026', reason: 'invalid_or_ambiguous_date' },
+        { rowId: 1, column: 'priority', value: 'UNKNOWN', reason: 'invalid_boolean' },
+      ],
+    });
+
+    const aggressive = executeCleaningRecipe(input, table, buildPresetRecipe(table, 'aggressive'));
+    expect(aggressive.rows[0]).toMatchObject({ amount: null, date: '09/08/2026', priority: null });
+    expect(aggressive.summary).toMatchObject({ parseFailures: 3, generatedNulls: 2 });
+  });
+
+  it('rejects overlapping boolean mappings', () => {
+    const recipe: CleaningRecipe = {
+      name: 'invalid boolean map',
+      steps: [{
+        type: 'normalize_boolean',
+        columns: ['priority'],
+        trueValues: ['yes'],
+        falseValues: ['YES'],
+        onError: 'keep_original',
+      }],
+    };
+    expect(() => executeCleaningRecipe([], table, recipe)).toThrow(
+      'Boolean trueValues and falseValues must not overlap.',
+    );
   });
 
   it('excludes missing values from mean and median fill calculations', () => {

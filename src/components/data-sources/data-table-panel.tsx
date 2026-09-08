@@ -46,6 +46,7 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
   const [profileStatus, setProfileStatus] = useState<ProfileStatus>('fresh');
   const [profiling, setProfiling] = useState(false);
   const [showCleaning, setShowCleaning] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // Data
   const [data, setData] = useState<RowResponse | null>(null);
@@ -76,6 +77,7 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
     setSearchInput('');
     setSelectedRows(new Set());
     setShowCleaning(false);
+    setExporting(false);
     setError(null);
     setSchemaLoading(true);
     fetch(`/api/data-sources/${dataSourceId}`, { signal: controller.signal })
@@ -236,6 +238,38 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
     fetchRows();
   }
 
+  async function handleExport() {
+    setExporting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/data-sources/${dataSourceId}/export`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        setError(body?.error ?? 'Export failed.');
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('Content-Disposition') ?? '';
+      const encodedName = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+      let fileName = 'data-export.csv';
+      if (encodedName) {
+        try { fileName = decodeURIComponent(encodedName); } catch { /* keep safe fallback */ }
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError('Export failed.');
+    } finally {
+      setExporting(false);
+    }
+  }
+
   function handlePageChange(p: number) {
     setPage(p);
   }
@@ -297,10 +331,18 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
           {/* Add row button */}
           <button
             onClick={() => setShowCleaning(true)}
-            disabled={schemaLoading}
+            disabled={schemaLoading || !data?.columns.length}
             className="px-3 py-1 text-[11px] font-medium text-purple-300 bg-purple-950/30 border border-purple-800/30 rounded-lg transition disabled:opacity-50"
           >
             Clean Data
+          </button>
+
+          <button
+            onClick={handleExport}
+            disabled={exporting || schemaLoading || !data}
+            className="px-3 py-1 text-[11px] font-medium text-emerald-300 bg-emerald-950/30 border border-emerald-800/30 rounded-lg transition disabled:opacity-50"
+          >
+            {exporting ? 'Exporting...' : 'Export CSV'}
           </button>
 
           {/* Add row button */}
@@ -383,7 +425,10 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
       {showCleaning && (
         <CleaningPanel
           dataSourceId={dataSourceId}
+          columns={data?.columns ?? []}
+          exporting={exporting}
           onClose={() => setShowCleaning(false)}
+          onExport={() => void handleExport()}
           onApplied={() => {
             setProfileStatus('fresh');
             fetchRows();

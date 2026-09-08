@@ -46,6 +46,17 @@ function normalizeNumber(
   return String(number);
 }
 
+function normalizeBoolean(
+  value: string,
+  trueValues: ReadonlySet<string>,
+  falseValues: ReadonlySet<string>,
+): string | null {
+  const normalized = normalizeFullWidth(value).trim().toLowerCase();
+  if (trueValues.has(normalized)) return 'true';
+  if (falseValues.has(normalized)) return 'false';
+  return null;
+}
+
 function validateColumns(recipe: CleaningRecipe, table: DiscoveredTable) {
   const allowed = new Set(table.columns.map((column) => column.name));
   const assert = (names: string[]) => {
@@ -59,6 +70,11 @@ function validateColumns(recipe: CleaningRecipe, table: DiscoveredTable) {
     if (step.type === 'drop_duplicates' && step.keys) assert(step.keys);
     if (step.type === 'fill_missing' && step.strategy === 'fixed' && step.value === undefined) {
       throw new Error('fill_missing with fixed strategy requires a value.');
+    }
+    if (step.type === 'normalize_boolean') {
+      const truthy = new Set(step.trueValues.map((value) => normalizeFullWidth(value).trim().toLowerCase()));
+      const overlapping = step.falseValues.some((value) => truthy.has(normalizeFullWidth(value).trim().toLowerCase()));
+      if (overlapping) throw new Error('Boolean trueValues and falseValues must not overlap.');
     }
   }
 }
@@ -86,6 +102,18 @@ export function executeCleaningRecipe(
   const original = new Map(input.map((row) => [row._row_id, { ...row }]));
   let rows = input.map((row) => ({ ...row }));
   let parseFailures = 0;
+  const parseFailureSamples: CleaningSummary['parseFailureSamples'] = [];
+  const recordParseFailure = (
+    rowId: number,
+    column: string,
+    value: string,
+    reason: CleaningSummary['parseFailureSamples'][number]['reason'],
+  ) => {
+    parseFailures++;
+    if (parseFailureSamples.length < SAMPLE_LIMIT) {
+      parseFailureSamples.push({ rowId, column, value, reason });
+    }
+  };
 
   for (const step of recipe.steps) {
     if (step.type === 'drop_duplicates') {
@@ -115,6 +143,13 @@ export function executeCleaningRecipe(
       continue;
     }
 
+    const booleanValues = step.type === 'normalize_boolean'
+      ? {
+          trueValues: new Set(step.trueValues.map((value) => normalizeFullWidth(value).trim().toLowerCase())),
+          falseValues: new Set(step.falseValues.map((value) => normalizeFullWidth(value).trim().toLowerCase())),
+        }
+      : null;
+
     for (const row of rows) {
       for (const column of step.columns) {
         const current = asText(row[column]);
@@ -127,13 +162,23 @@ export function executeCleaningRecipe(
         } else if (step.type === 'normalize_numeric') {
           const normalized = normalizeNumber(current, step.percentageMode);
           if (normalized == null) {
-            parseFailures++;
+            recordParseFailure(row._row_id, column, current, 'invalid_numeric');
+            if (step.onError === 'set_null') row[column] = null;
+          } else row[column] = normalized;
+        } else if (step.type === 'normalize_boolean') {
+          const normalized = normalizeBoolean(
+            current,
+            booleanValues!.trueValues,
+            booleanValues!.falseValues,
+          );
+          if (normalized == null) {
+            recordParseFailure(row._row_id, column, current, 'invalid_boolean');
             if (step.onError === 'set_null') row[column] = null;
           } else row[column] = normalized;
         } else if (step.type === 'normalize_date') {
           const normalized = normalizeDate(current);
           if (normalized) row[column] = normalized;
-          else parseFailures++;
+          else recordParseFailure(row._row_id, column, current, 'invalid_or_ambiguous_date');
         }
       }
     }
@@ -169,6 +214,7 @@ export function executeCleaningRecipe(
       removedRows: input.length - rows.length,
       generatedNulls,
       parseFailures,
+      parseFailureSamples,
       samples,
     },
   };
@@ -181,16 +227,26 @@ export function buildPresetRecipe(
   const all = table.columns.map((column) => column.name);
   const numeric = table.columns.filter((column) => column.semanticType === 'NUMERIC').map((column) => column.name);
   const dates = table.columns.filter((column) => column.semanticType === 'DATE').map((column) => column.name);
+  const booleans = table.columns.filter((column) => column.semanticType === 'BOOLEAN').map((column) => column.name);
   const steps: CleaningRecipe['steps'] = [
     { type: 'fullwidth_to_halfwidth', columns: all },
     { type: 'normalize_whitespace', columns: all },
     { type: 'normalize_null', columns: all, markers: ['', 'null', 'n/a', 'na', 'nil', 'none', '-', '—', '无', '暂无'] },
   ];
   if (preset !== 'conservative' && numeric.length) {
-    steps.push({ type: 'normalize_numeric', columns: numeric, percentageMode: 'keep_number', onError: preset === 'aggressive' ? 'set_null' : 'keep_original' });
+    steps.push({ type: 'normalize_numeric', columns: numeric, percentageMode: 'decimal', onError: preset === 'aggressive' ? 'set_null' : 'keep_original' });
   }
   if (preset !== 'conservative' && dates.length) {
     steps.push({ type: 'normalize_date', columns: dates, onAmbiguous: 'keep_original' });
+  }
+  if (preset !== 'conservative' && booleans.length) {
+    steps.push({
+      type: 'normalize_boolean',
+      columns: booleans,
+      trueValues: ['true', 'yes', 'y', '1'],
+      falseValues: ['false', 'no', 'n', '0'],
+      onError: preset === 'aggressive' ? 'set_null' : 'keep_original',
+    });
   }
   if (preset !== 'conservative') steps.push({ type: 'drop_duplicates' });
   return { name: `${preset[0].toUpperCase()}${preset.slice(1)} preset`, steps };
