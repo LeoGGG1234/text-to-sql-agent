@@ -3,6 +3,7 @@
 import { useChat } from 'ai/react';
 import { useRef, useEffect, useState, type FormEvent } from 'react';
 import { ToolResultCard } from '@/components/chat/tool-result-card';
+import { readConversationIdHeader } from '@/lib/chat-protocol';
 import type { Message } from 'ai';
 
 const EXAMPLE_QUESTIONS = [
@@ -36,12 +37,20 @@ interface ChatAreaProps {
   conversationId: string | null;
   /** Active data source ID — null means use retail demo */
   dataSourceId?: string | null;
+  /** True while the selected conversation's persisted data source is loading */
+  conversationContextLoading?: boolean;
   /** Callback when the first message is sent (conversation needs creation) */
   onConversationCreated?: (id: string) => void;
 }
 
-export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
+export function ChatArea({
+  conversationId,
+  dataSourceId,
+  conversationContextLoading = false,
+  onConversationCreated,
+}: ChatAreaProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const pendingConversationIdRef = useRef<string | null>(null);
   const [initialMessages, setInitialMessages] = useState<Message[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
@@ -123,6 +132,21 @@ export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
         provider,
         dataSourceId,
       },
+      onResponse: (response) => {
+        pendingConversationIdRef.current = conversationId
+          ? null
+          : readConversationIdHeader(response);
+      },
+      onFinish: () => {
+        const createdConversationId = pendingConversationIdRef.current;
+        pendingConversationIdRef.current = null;
+        if (!conversationId && createdConversationId) {
+          onConversationCreated?.(createdConversationId);
+        }
+      },
+      onError: () => {
+        pendingConversationIdRef.current = null;
+      },
     });
 
   // Auto-scroll to bottom
@@ -132,7 +156,7 @@ export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
 
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isLoading || conversationContextLoading) return;
     handleSubmit(e);
   };
 
@@ -258,9 +282,13 @@ export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
           type="text"
           value={input}
           onChange={handleInputChange}
-          placeholder="问一个关于销售数据的问题..."
+          placeholder={
+            conversationContextLoading
+              ? '正在加载会话数据源...'
+              : '问一个关于销售数据的问题...'
+          }
           className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 transition"
-          disabled={isLoading}
+          disabled={isLoading || conversationContextLoading}
         />
         {providers.length > 1 && (
           <select
@@ -278,7 +306,7 @@ export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
         )}
         <button
           type="submit"
-          disabled={isLoading || !input.trim()}
+          disabled={isLoading || conversationContextLoading || !input.trim()}
           className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition"
         >
           发送
@@ -289,6 +317,8 @@ export function ChatArea({ conversationId, dataSourceId }: ChatAreaProps) {
       <div className="mt-3 text-center text-xs text-zinc-600 shrink-0">
         {isLoading
           ? 'streaming...'
+          : conversationContextLoading
+            ? 'loading conversation context...'
           : `${messages.length} messages · ready`}
       </div>
     </div>

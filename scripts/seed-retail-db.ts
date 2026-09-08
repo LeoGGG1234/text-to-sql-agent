@@ -33,8 +33,13 @@ if (!ADMIN_URL) {
 
 // Read-only role credentials (the password is set/reset here).
 const READONLY_USER = 'retail_readonly';
-const READONLY_PASSWORD =
-  process.env.RETAIL_READONLY_PASSWORD ?? 'readonly_demo_pw_change_me';
+const READONLY_PASSWORD = process.env.RETAIL_READONLY_PASSWORD;
+if (!READONLY_PASSWORD) {
+  console.error(
+    '❌ RETAIL_READONLY_PASSWORD is required. Refusing to create a runtime role with a default password.',
+  );
+  process.exit(1);
+}
 
 const sql = neon(ADMIN_URL);
 
@@ -398,20 +403,23 @@ async function seedOrders(customers: Customer[], products: Product[], orderCount
 async function createReadonlyRole() {
   console.log('▸ Creating read-only role...');
 
-  // READONLY_USER / READONLY_PASSWORD are hardcoded constants (not user input),
-  // so there is no SQL-injection risk. We still use PostgreSQL's format() with
-  // %I (identifier) and %L (literal) escaping as defense-in-depth — in case
-  // someone later refactors these into env vars or CLI args.
-  await sql.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${READONLY_USER}') THEN
-        EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', '${READONLY_USER}', '${READONLY_PASSWORD}');
-      ELSE
-        EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '${READONLY_USER}', '${READONLY_PASSWORD}');
-      END IF;
-    END
-    $$;`);
+  const [roleState] = await sql.query(
+    'SELECT 1 AS exists FROM pg_roles WHERE rolname = $1',
+    [READONLY_USER],
+  );
+  const action = roleState ? 'ALTER' : 'CREATE';
+  const [ddlRow] = await sql.query(
+    `SELECT format(
+       '${action} ROLE ${READONLY_USER} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD %L',
+       $1::text
+     ) AS ddl`,
+    [READONLY_PASSWORD],
+  );
+  const ddl = (ddlRow as { ddl?: unknown } | undefined)?.ddl;
+  if (typeof ddl !== 'string') {
+    throw new Error('Failed to safely construct retail read-only role DDL.');
+  }
+  await sql.query(ddl);
 
   await sql.query(`GRANT USAGE ON SCHEMA public TO ${READONLY_USER}`);
   await sql.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${READONLY_USER}`);

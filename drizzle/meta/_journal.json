@@ -15,6 +15,13 @@
       "when": 1786477367248,
       "tag": "0001_guest_isolation",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788851136649,
+      "tag": "0002_data_quality_cleaning",
+      "breakpoints": true
     }
   ]
 }

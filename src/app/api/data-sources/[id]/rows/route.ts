@@ -7,19 +7,22 @@
 
 import { NextResponse } from 'next/server';
 import { neon } from '@neondatabase/serverless';
-import { getDb } from '@/db';
-import * as schema from '@/db/schema';
 import { getSession } from '@/lib/auth-helpers';
-import { eq, and } from 'drizzle-orm';
 import {
   validateTableName,
   validateColumnName,
   buildSearchClause,
-  escapeSqlValue,
+  ColumnNotFoundError,
   quoteIdent,
   serializeRow,
+  TableNotFoundError,
 } from '@/lib/data-sources/row-utils';
 import type { SchemaJson } from '@/lib/data-sources/types';
+import { getOwnedDataSource } from '@/lib/data-sources/schema-manager';
+import {
+  withDatabaseTransaction,
+  type TransactionClient,
+} from '@/lib/database-transaction';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,23 +41,14 @@ async function fetchAndVerify(
   config: Record<string, unknown>;
   schemaJson: SchemaJson;
   userId: string;
+  dataRevision: number;
 }> {
   const session = await getSession(req);
   if (!session) {
     throw new AuthError();
   }
 
-  const db = getDb();
-  const [row] = await db
-    .select()
-    .from(schema.dataSources)
-    .where(
-      and(
-        eq(schema.dataSources.id, dsId),
-        eq(schema.dataSources.userId, session.user.id),
-      ),
-    )
-    .limit(1);
+  const row = await getOwnedDataSource(dsId, session.user.id);
 
   if (!row) {
     throw new NotFoundError();
@@ -70,7 +64,72 @@ async function fetchAndVerify(
     config: row.config as Record<string, unknown>,
     schemaJson,
     userId: session.user.id,
+    dataRevision: row.dataRevision,
   };
+}
+
+function withUpdatedRowCount(
+  schemaJson: SchemaJson,
+  config: Record<string, unknown>,
+  tableName: string,
+  rowCount: number | undefined,
+) {
+  if (rowCount === undefined) return { schemaJson, config };
+
+  return {
+    schemaJson: {
+      ...schemaJson,
+      tables: schemaJson.tables.map((table) =>
+        table.name === tableName ? { ...table, rowCount } : table,
+      ),
+    },
+    config: {
+      ...config,
+      tables: Array.isArray(config.tables)
+        ? config.tables.map((table) =>
+            table &&
+            typeof table === 'object' &&
+            (table as { name?: unknown }).name === tableName
+              ? { ...table, rowCount }
+              : table,
+          )
+        : config.tables,
+    },
+  };
+}
+
+async function markProfileStale(
+  client: TransactionClient,
+  options: {
+    dataSourceId: string;
+    userId: string;
+    tableName: string;
+    schemaJson: SchemaJson;
+    config: Record<string, unknown>;
+    rowCount?: number;
+  },
+) {
+  const updated = withUpdatedRowCount(
+    options.schemaJson,
+    options.config,
+    options.tableName,
+    options.rowCount,
+  );
+  await client.query(
+    `UPDATE data_sources
+     SET data_revision = data_revision + 1,
+         profile_status = 'stale',
+         schema_json = $3::jsonb,
+         config = $4::jsonb,
+         updated_at = now()
+     WHERE id = $1 AND user_id = $2`,
+    [
+      options.dataSourceId,
+      options.userId,
+      JSON.stringify(updated.schemaJson),
+      JSON.stringify(updated.config),
+    ],
+  );
 }
 
 // ─── GET: Paginated rows ───────────────────────────────────────
@@ -164,7 +223,7 @@ async function handlePut(
   column: string,
   value: string,
 ) {
-  const { schemaJson } = await fetchAndVerify(req, dsId);
+  const { schemaJson, config, userId } = await fetchAndVerify(req, dsId);
   const table = validateTableName(schemaJson, tableName);
   validateColumnName(table, column);
 
@@ -175,13 +234,21 @@ async function handlePut(
       { status: 500 },
     );
   }
-  const sql = neon(adminUrl);
+  await withDatabaseTransaction(adminUrl, async (client) => {
+    await client.query(
+      `UPDATE userdata.${quoteIdent(tableName)} SET ${quoteIdent(column)} = $1 WHERE _row_id = $2`,
+      [value, rowId],
+    );
+    await markProfileStale(client, {
+      dataSourceId: dsId,
+      userId,
+      tableName,
+      schemaJson,
+      config,
+    });
+  });
 
-  await sql.query(
-    `UPDATE userdata.${quoteIdent(tableName)} SET ${quoteIdent(column)} = '${escapeSqlValue(value)}' WHERE _row_id = ${rowId}`,
-  );
-
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, profileStatus: 'stale' });
 }
 
 // ─── DELETE: Delete rows by _row_id ────────────────────────────
@@ -192,7 +259,7 @@ async function handleDelete(
   tableName: string,
   rowIds: number[],
 ) {
-  const { schemaJson } = await fetchAndVerify(req, dsId);
+  const { schemaJson, config, userId } = await fetchAndVerify(req, dsId);
   validateTableName(schemaJson, tableName);
 
   if (rowIds.length > MAX_DELETE_IDS) {
@@ -209,16 +276,32 @@ async function handleDelete(
       { status: 500 },
     );
   }
-  const sql = neon(adminUrl);
+  let deleted = 0;
+  await withDatabaseTransaction(adminUrl, async (client) => {
+    const placeholders = rowIds.map((_, index) => `$${index + 1}`).join(', ');
+    const result = await client.query(
+      `DELETE FROM userdata.${quoteIdent(tableName)} WHERE _row_id IN (${placeholders})`,
+      rowIds,
+    );
+    deleted = (result as { rowCount?: number }).rowCount ?? 0;
 
-  const idList = rowIds.map(Number).join(', ');
-  const result = await sql.query(
-    `DELETE FROM userdata.${quoteIdent(tableName)} WHERE _row_id IN (${idList})`,
-  );
-  // Neon HTTP driver returns the result; extract affected row count.
-  const deleted = (result as { rowCount?: number }).rowCount ?? rowIds.length;
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS count FROM userdata.${quoteIdent(tableName)}`,
+    );
+    const rowCount = Number(
+      (countResult as { rows?: Array<{ count?: number }> }).rows?.[0]?.count ?? 0,
+    );
+    await markProfileStale(client, {
+      dataSourceId: dsId,
+      userId,
+      tableName,
+      schemaJson,
+      config,
+      rowCount,
+    });
+  });
 
-  return NextResponse.json({ success: true, deleted });
+  return NextResponse.json({ success: true, deleted, profileStatus: 'stale' });
 }
 
 // ─── POST: Insert a new row ────────────────────────────────────
@@ -229,7 +312,7 @@ async function handlePost(
   tableName: string,
   values: Record<string, string> | undefined,
 ) {
-  const { schemaJson } = await fetchAndVerify(req, dsId);
+  const { schemaJson, config, userId } = await fetchAndVerify(req, dsId);
   const table = validateTableName(schemaJson, tableName);
 
   // Validate all provided column names.
@@ -246,33 +329,54 @@ async function handlePost(
       { status: 500 },
     );
   }
-  const sql = neon(adminUrl);
+  let newRowId = 0;
+  let row: Record<string, unknown> = {};
+  await withDatabaseTransaction(adminUrl, async (client) => {
+    let insertSql: string;
+    let insertValues: string[] | undefined;
+    if (values && Object.keys(values).length > 0) {
+      const cols = Object.keys(values).map((column) => quoteIdent(column)).join(', ');
+      insertValues = Object.values(values);
+      const placeholders = insertValues.map((_, index) => `$${index + 1}`).join(', ');
+      insertSql = `INSERT INTO userdata.${quoteIdent(tableName)} (${cols}) VALUES (${placeholders}) RETURNING _row_id`;
+    } else {
+      insertSql = `INSERT INTO userdata.${quoteIdent(tableName)} DEFAULT VALUES RETURNING _row_id`;
+    }
 
-  let insertSql: string;
-  if (values && Object.keys(values).length > 0) {
-    const cols = Object.keys(values).map((c) => quoteIdent(c)).join(', ');
-    const vals = Object.values(values)
-      .map((v) => `'${escapeSqlValue(v)}'`)
-      .join(', ');
-    insertSql = `INSERT INTO userdata.${quoteIdent(tableName)} (${cols}) VALUES (${vals}) RETURNING _row_id`;
-  } else {
-    // Insert a blank row (all NULLs except _row_id).
-    insertSql = `INSERT INTO userdata.${quoteIdent(tableName)} DEFAULT VALUES RETURNING _row_id`;
-  }
+    const insertResult = await client.query(insertSql, insertValues);
+    newRowId = Number(
+      (insertResult as { rows?: Array<{ _row_id?: number }> }).rows?.[0]?._row_id,
+    );
 
-  const [result] = await sql.query(insertSql);
-  const newRowId = (result as { _row_id: number })._row_id;
+    const colList = ['_row_id', ...table.columns.map((column) => quoteIdent(column.name))].join(', ');
+    const rowResult = await client.query(
+      `SELECT ${colList} FROM userdata.${quoteIdent(tableName)} WHERE _row_id = $1`,
+      [newRowId],
+    );
+    row =
+      (rowResult as { rows?: Array<Record<string, unknown>> }).rows?.[0] ?? {};
 
-  // Fetch the full row.
-  const colList = ['_row_id', ...table.columns.map((c) => quoteIdent(c.name))].join(', ');
-  const [row] = await sql.query(
-    `SELECT ${colList} FROM userdata.${quoteIdent(tableName)} WHERE _row_id = ${newRowId}`,
-  );
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS count FROM userdata.${quoteIdent(tableName)}`,
+    );
+    const rowCount = Number(
+      (countResult as { rows?: Array<{ count?: number }> }).rows?.[0]?.count ?? 0,
+    );
+    await markProfileStale(client, {
+      dataSourceId: dsId,
+      userId,
+      tableName,
+      schemaJson,
+      config,
+      rowCount,
+    });
+  });
 
   return NextResponse.json({
     success: true,
     rowId: newRowId,
-    row: serializeRow(row as Record<string, unknown>),
+    row: serializeRow(row),
+    profileStatus: 'stale',
   });
 }
 
@@ -335,9 +439,15 @@ export async function PUT(
   const tableName = body.table as string | undefined;
   const rowId = Number(body.rowId);
   const column = body.column as string | undefined;
-  const value = body.value as string | undefined;
+  const value = typeof body.value === 'string' ? body.value : undefined;
 
-  if (!tableName || !column || value === undefined || isNaN(rowId)) {
+  if (
+    !tableName ||
+    !column ||
+    value === undefined ||
+    !Number.isSafeInteger(rowId) ||
+    rowId <= 0
+  ) {
     return NextResponse.json(
       { error: 'Missing required fields: table, rowId (number), column, value.' },
       { status: 400 },
@@ -379,7 +489,13 @@ export async function DELETE(
   const tableName = body.table as string | undefined;
   const rowIds = body.rowIds as number[] | undefined;
 
-  if (!tableName || !rowIds || !Array.isArray(rowIds) || rowIds.length === 0) {
+  if (
+    !tableName ||
+    !rowIds ||
+    !Array.isArray(rowIds) ||
+    rowIds.length === 0 ||
+    rowIds.some((rowId) => !Number.isSafeInteger(rowId) || rowId <= 0)
+  ) {
     return NextResponse.json(
       { error: 'Missing required fields: table, rowIds (number[], min 1).' },
       { status: 400 },
@@ -419,9 +535,16 @@ export async function POST(
   }
 
   const tableName = body.table as string | undefined;
-  const values = body.values as Record<string, string> | undefined;
+  const rawValues = body.values;
+  const values =
+    rawValues && typeof rawValues === 'object' && !Array.isArray(rawValues)
+      ? (rawValues as Record<string, unknown>)
+      : undefined;
 
-  if (!tableName) {
+  if (
+    !tableName ||
+    (values && Object.values(values).some((value) => typeof value !== 'string'))
+  ) {
     return NextResponse.json(
       { error: 'Missing required field: table.' },
       { status: 400 },
@@ -429,7 +552,12 @@ export async function POST(
   }
 
   try {
-    return await handlePost(req, id, tableName, values);
+    return await handlePost(
+      req,
+      id,
+      tableName,
+      values as Record<string, string> | undefined,
+    );
   } catch (err) {
     if (err instanceof AuthError) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -452,16 +580,4 @@ class AuthError extends Error {
 }
 class NotFoundError extends Error {
   constructor() { super('Not found'); this.name = 'NotFoundError'; }
-}
-class TableNotFoundError extends Error {
-  constructor(table: string) {
-    super(`Table "${table}" not found in data source schema.`);
-    this.name = 'TableNotFoundError';
-  }
-}
-class ColumnNotFoundError extends Error {
-  constructor(column: string, table: string) {
-    super(`Column "${column}" not found in table "${table}".`);
-    this.name = 'ColumnNotFoundError';
-  }
 }

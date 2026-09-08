@@ -22,9 +22,14 @@ export async function getOwnedDataSource(
     .select({
       id: schema.dataSources.id,
       userId: schema.dataSources.userId,
+      name: schema.dataSources.name,
       type: schema.dataSources.type,
       config: schema.dataSources.config,
       schemaJson: schema.dataSources.schemaJson,
+      dataRevision: schema.dataSources.dataRevision,
+      profileRevision: schema.dataSources.profileRevision,
+      profileStatus: schema.dataSources.profileStatus,
+      profiledAt: schema.dataSources.profiledAt,
     })
     .from(schema.dataSources)
     .where(

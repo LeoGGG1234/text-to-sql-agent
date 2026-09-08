@@ -13,7 +13,7 @@ This project therefore treats every generated query as untrusted input and optim
 ## 2. User flow
 
 1. A registered or isolated guest user starts a conversation.
-2. The user selects the built-in retail demo or an owned CSV/XLSX data source.
+2. The user selects the built-in retail demo or an owned CSV/XLSX data source, inspects its quality profile, and can preview a deterministic cleaning recipe before applying it.
 3. The chat route revalidates conversation and data-source ownership.
 4. The model receives only the selected schema and calls `runSql`.
 5. The SQL is parsed, allowlisted, limited, and executed with a read-only role and timeout.
@@ -42,7 +42,7 @@ A real uploaded-table incident exposed a second reliability issue: overlapping d
 
 ## 5. Eval-driven iteration
 
-The eval runner sends 20 bilingual questions through the real `/api/chat` route, extracts the SQL actually issued by the agent, executes generated and reference SQL against the same read-only database, and compares result sets.
+The current eval runner sends 50 bilingual questions through the real `/api/chat` route, extracts and validates the SQL actually issued by the agent, executes generated and reference SQL against the same read-only database, and compares result sets. The published 40%/60% comparison below remains a historical 20-case snapshot until the expanded suite receives a controlled rerun.
 
 | Prompt | Validity | Exact execution accuracy | Schema adherence |
 |--------|----------|--------------------------|------------------|
@@ -60,14 +60,15 @@ Raw reports and failed SQL are retained under `eval/` for independent review.
 
 ## 6. Verification and deployment
 
-The local/CI quality gate runs unit and regression tests, TypeScript, ESLint, and a production build. Security integration tests use a disposable Postgres target because they apply migrations, create roles/tables, transfer ownership, and clean up fixtures. Deployment readiness separately verifies the guest migration, role attributes, schema privileges, and SELECT-only table grants against an explicit target.
+The local/CI quality gate runs unit and regression tests, Playwright browser flows, TypeScript, ESLint, and a production build. Security integration tests use a disposable Postgres target because they apply migrations, create roles/tables, transfer ownership, exercise transactional cleaning, and clean up fixtures. Deployment readiness separately verifies the guest migration, data-quality migration, role attributes, schema privileges, and SELECT-only table grants against an explicit target.
 
 The public staging deployment is available at <https://text-to-sql-agent-staging.vercel.app>.
 
 ## 7. Current limitations
 
 - Security integration runs against a dedicated disposable Neon project in GitHub Actions; staging is deliberately not reused for destructive CI. The CI database remains an operational credential that must be rotated if exposed and reset if its schema drifts.
-- Exact execution accuracy is 60% on the current 20-case snapshot, with the largest remaining gaps in time-series representation and multi-step semantics.
+- The last published score is 60% on the historical 20-case snapshot. The current 50-case suite has not yet received a controlled benchmark run.
+- Cleaning is bounded to 50,000 rows per run and records history, but one-click undo is not implemented yet.
 - Eval runs create application conversations; a future harness should use a clearly labelled eval identity and deterministic cleanup policy.
 - Rate limiting is process-local and is not a substitute for a distributed production limiter.
 

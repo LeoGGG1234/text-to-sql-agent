@@ -7,9 +7,7 @@
  * then POSTs multipart to /api/data-sources/upload.
  */
 
-import { useState, useRef, type DragEvent, type ChangeEvent } from 'react';
-
-const MAX_FILE_MB = 80;
+import { useEffect, useState, useRef, type DragEvent, type ChangeEvent } from 'react';
 
 interface Props {
   onSuccess: (result: { id: string; name: string; rowCount: number; columns: Array<{ name: string; semanticType: string }> }) => void;
@@ -22,18 +20,28 @@ export function UploadForm({ onSuccess, onCancel }: Props) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [limits, setLimits] = useState<{ maxFileMb: number; maxRows: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/data-sources/upload-limits', { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((value) => { if (value) setLimits(value); })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
 
   function validateAndSet(f: File | null) {
     setError(null);
     if (!f) return;
     const ext = f.name.split('.').pop()?.toLowerCase();
-    if (!ext || !['csv', 'xlsx', 'xls'].includes(ext)) {
-      setError('Only .csv, .xlsx, .xls files are supported.');
+    if (!ext || !['csv', 'xlsx'].includes(ext)) {
+      setError('Only .csv and .xlsx files are supported. Save legacy .xls files as .xlsx first.');
       return;
     }
-    if (f.size > MAX_FILE_MB * 1024 * 1024) {
-      setError(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Limit: ${MAX_FILE_MB} MB.`);
+    if (limits && f.size > limits.maxFileMb * 1024 * 1024) {
+      setError(`File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Limit: ${limits.maxFileMb} MB.`);
       return;
     }
     setFile(f);
@@ -102,7 +110,7 @@ export function UploadForm({ onSuccess, onCancel }: Props) {
         <input
           ref={inputRef}
           type="file"
-          accept=".csv,.xlsx,.xls"
+          accept=".csv,.xlsx"
           onChange={handleChange}
           className="hidden"
         />
@@ -113,7 +121,9 @@ export function UploadForm({ onSuccess, onCancel }: Props) {
         ) : (
           <p className="text-xs text-zinc-500">
             Drop a file here or click to browse.<br />
-            <span className="text-zinc-600">.csv, .xlsx, .xls · max {MAX_FILE_MB} MB · 200k rows</span>
+            <span className="text-zinc-600">
+              .csv, .xlsx · {limits ? `max ${limits.maxFileMb} MB · ${limits.maxRows.toLocaleString()} rows` : 'limits checked by server'}
+            </span>
           </p>
         )}
       </div>

@@ -4,11 +4,15 @@
  */
 
 import { NextResponse } from 'next/server';
-import { neon } from '@neondatabase/serverless';
 import { getDb } from '@/db';
 import * as schema from '@/db/schema';
 import { getSession } from '@/lib/auth-helpers';
 import { eq, and } from 'drizzle-orm';
+import { getOwnedDataSource } from '@/lib/data-sources/schema-manager';
+import { withDatabaseTransaction } from '@/lib/database-transaction';
+
+const UPLOAD_TABLE_NAME =
+  /^ds_[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}$/i;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,6 +50,10 @@ export async function GET(
     type: row.type,
     config: row.config,
     schemaJson: row.schemaJson,
+    dataRevision: row.dataRevision,
+    profileRevision: row.profileRevision,
+    profileStatus: row.profileStatus,
+    profiledAt: row.profiledAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   });
@@ -63,17 +71,7 @@ export async function DELETE(
   const { id } = await params;
   const db = getDb();
 
-  // Verify ownership.
-  const [row] = await db
-    .select({ type: schema.dataSources.type, config: schema.dataSources.config })
-    .from(schema.dataSources)
-    .where(
-      and(
-        eq(schema.dataSources.id, id),
-        eq(schema.dataSources.userId, session.user.id),
-      ),
-    )
-    .limit(1);
+  const row = await getOwnedDataSource(id, session.user.id);
 
   if (!row) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -84,6 +82,12 @@ export async function DELETE(
     const config = row.config as Record<string, unknown>;
     const tables = config.tables as { name: string }[] | undefined;
     if (tables?.length) {
+      if (tables.some((table) => !UPLOAD_TABLE_NAME.test(table.name))) {
+        return NextResponse.json(
+          { error: 'Data source contains invalid physical table metadata.' },
+          { status: 409 },
+        );
+      }
       const adminUrl = process.env.DATABASE_URL;
       if (!adminUrl) {
         return NextResponse.json(
@@ -91,25 +95,15 @@ export async function DELETE(
           { status: 500 },
         );
       }
-      const sql = neon(adminUrl);
-      await sql.query('BEGIN');
-      try {
+      await withDatabaseTransaction(adminUrl, async (client) => {
         for (const t of tables) {
-          await sql.query(`DROP TABLE IF EXISTS userdata."${t.name}"`);
+          await client.query(`DROP TABLE IF EXISTS userdata."${t.name}"`);
         }
-        await db
-          .delete(schema.dataSources)
-          .where(
-            and(
-              eq(schema.dataSources.id, id),
-              eq(schema.dataSources.userId, session.user.id),
-            ),
-          );
-        await sql.query('COMMIT');
-      } catch (err) {
-        await sql.query('ROLLBACK');
-        throw err;
-      }
+        await client.query(
+          'DELETE FROM data_sources WHERE id = $1 AND user_id = $2',
+          [id, session.user.id],
+        );
+      });
       return NextResponse.json({ success: true });
     }
   }

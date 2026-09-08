@@ -31,6 +31,7 @@ import { buildQualityNote, buildTableQualityNote } from '@/lib/data-sources/qual
 import type { ExecOptions } from '@/lib/sql-executor';
 import { getOwnedConversation } from '@/lib/conversation-manager';
 import { getOwnedDataSource } from '@/lib/data-sources/schema-manager';
+import { CHAT_CONVERSATION_ID_HEADER } from '@/lib/chat-protocol';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60; // seconds (Hobby plan limit)
@@ -122,6 +123,16 @@ export async function POST(req: Request) {
       );
     }
 
+    if (
+      ownedDataSource?.type === 'upload' &&
+      !process.env.USERDATA_DATABASE_URL
+    ) {
+      return Response.json(
+        { error: 'User-data querying is not configured.' },
+        { status: 503 },
+      );
+    }
+
     // No persistence occurs until every supplied or stored resource has been
     // authorized for the current user.
     if (!existingConversation) {
@@ -174,7 +185,10 @@ export async function POST(req: Request) {
 
     if (ownedDataSource) {
       const schemaJson = ownedDataSource.schemaJson as unknown as SchemaJson | null;
-      const qualityProfile = schemaJson?.qualityProfile as QualityProfile | undefined;
+      const qualityProfile =
+        ownedDataSource.profileStatus === 'fresh'
+          ? (schemaJson?.qualityProfile as QualityProfile | undefined)
+          : undefined;
       if (schemaJson?.tables) {
         // Convert DiscoveredTable[] → TableDef[] for prompt + getSchema tool.
         resolvedTables = schemaJson.tables.map((t) => {
@@ -207,17 +221,14 @@ export async function POST(req: Request) {
 
       // Set exec options for user-uploaded data sources.
       if (ownedDataSource.type === 'upload') {
-        const userdataUrl = process.env.USERDATA_DATABASE_URL;
-        if (userdataUrl) {
-          execOptions = {
-            connectionString: userdataUrl,
-            searchPath: 'userdata',
-            accessScope: {
-              schema: 'userdata',
-              tables: schemaJson?.tables.map((table) => table.name) ?? [],
-            },
-          };
-        }
+        execOptions = {
+          connectionString: process.env.USERDATA_DATABASE_URL!,
+          searchPath: 'userdata',
+          accessScope: {
+            schema: 'userdata',
+            tables: schemaJson?.tables.map((table) => table.name) ?? [],
+          },
+        };
       }
     }
 
@@ -339,6 +350,7 @@ export async function POST(req: Request) {
     for (const [k, v] of Object.entries(rlHeaders)) {
       headers.set(k, v);
     }
+    headers.set(CHAT_CONVERSATION_ID_HEADER, convId);
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,

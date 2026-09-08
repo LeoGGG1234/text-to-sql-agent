@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession, signOut } from '@/lib/auth-client';
 import { Sidebar } from '@/components/chat/sidebar';
@@ -45,8 +45,13 @@ export default function Home() {
 
   // Data source state
   const [dsPanelOpen, setDsPanelOpen] = useState(false);
-  const [activeDataSourceId, setActiveDataSourceId] = useState<string | null>(null);
+  // undefined means the selected conversation's persisted binding is loading.
+  // Omitting it from the chat body prevents a temporary null from overwriting
+  // the server-side binding.
+  const [activeDataSourceId, setActiveDataSourceId] = useState<string | null | undefined>(null);
   const [activeDataSourceName, setActiveDataSourceName] = useState<string | null>(null);
+  const [conversationContextLoading, setConversationContextLoading] = useState(false);
+  const conversationContextRequestRef = useRef<AbortController | null>(null);
 
   // Data table panel state
   const [dtPanelOpen, setDtPanelOpen] = useState(false);
@@ -71,6 +76,9 @@ export default function Home() {
 
   // Effective session (real auth, anonymous auth, or local dev)
   const effectiveSession = session ?? bypassSession;
+  const isGuest = Boolean(
+    session && (session.user as typeof session.user & { isAnonymous?: boolean }).isAnonymous,
+  );
 
   // ─── Load conversation list ─────────────────────────────
   const loadConversations = useCallback(async () => {
@@ -93,31 +101,61 @@ export default function Home() {
 
   // ─── Load active conversation's data source on switch ─────
   useEffect(() => {
+    conversationContextRequestRef.current?.abort();
+
     if (!activeId) {
       setActiveDataSourceId(null);
       setActiveDataSourceName(null);
+      setConversationContextLoading(false);
       return;
     }
-    fetch(`/api/conversations/${activeId}`)
-      .then((r) => r.json())
-      .then((data) => {
-        setActiveDataSourceId(data.dataSourceId ?? null);
-        // Derive name from conversations list
-        // The name will be set when the DataSourceManager fetches sources
+
+    const controller = new AbortController();
+    conversationContextRequestRef.current = controller;
+    setConversationContextLoading(true);
+    setActiveDataSourceId(undefined);
+    setActiveDataSourceName(null);
+
+    fetch(`/api/conversations/${activeId}`, { signal: controller.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error('Failed to load conversation context');
+        return r.json();
       })
-      .catch(() => {});
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setActiveDataSourceId(data.dataSourceId ?? null);
+        setActiveDataSourceName(data.dataSourceName ?? null);
+      })
+      .catch((error) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        console.error('Failed to load conversation context:', error);
+      })
+      .finally(() => {
+        if (conversationContextRequestRef.current === controller) {
+          conversationContextRequestRef.current = null;
+          setConversationContextLoading(false);
+        }
+      });
+
+    return () => controller.abort();
   }, [activeId]);
 
   // ─── Handlers ───────────────────────────────────────────
 
   const handleNew = () => {
+    conversationContextRequestRef.current?.abort();
     setActiveId(null);
     setSidebarOpen(false);
     setActiveDataSourceId(null);
     setActiveDataSourceName(null);
+    setConversationContextLoading(false);
   };
 
   const handleSelect = (id: string) => {
+    conversationContextRequestRef.current?.abort();
+    setActiveDataSourceId(undefined);
+    setActiveDataSourceName(null);
+    setConversationContextLoading(true);
     setActiveId(id);
     setSidebarOpen(false);
   };
@@ -135,6 +173,9 @@ export default function Home() {
   };
 
   const handleConversationCreated = (id: string) => {
+    setActiveDataSourceId(undefined);
+    setActiveDataSourceName(null);
+    setConversationContextLoading(true);
     setActiveId(id);
     loadConversations();
   };
@@ -142,14 +183,20 @@ export default function Home() {
   const handleDataSourceSelect = async (dsId: string, name: string) => {
     // dsId === '' means "use retail demo" (no data source)
     const newId = dsId || null;
+    conversationContextRequestRef.current?.abort();
+    setConversationContextLoading(false);
 
     // Persist to conversation if one is active
     if (activeId) {
-      await fetch(`/api/conversations/${activeId}/data-source`, {
+      const res = await fetch(`/api/conversations/${activeId}/data-source`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dataSourceId: newId }),
       });
+      if (!res.ok) {
+        console.error('Failed to update conversation data source');
+        return;
+      }
     }
 
     setActiveDataSourceId(newId);
@@ -190,7 +237,7 @@ export default function Home() {
         open={dsPanelOpen}
         onClose={() => setDsPanelOpen(false)}
         onSelect={handleDataSourceSelect}
-        selectedId={activeDataSourceId}
+        selectedId={activeDataSourceId ?? null}
         onViewData={(dsId) => {
           setDtDataSourceId(dsId);
           setDtPanelOpen(true);
@@ -256,8 +303,16 @@ export default function Home() {
             />
           </div>
           <div className="flex items-center gap-3">
+            {isGuest && (
+              <button
+                onClick={() => router.push('/login?upgrade=1')}
+                className="rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500"
+              >
+                Save demo data
+              </button>
+            )}
             <span className="text-xs text-zinc-500 hidden sm:inline">
-              {effectiveSession.user.email}
+              {isGuest ? 'Temporary guest' : effectiveSession.user.email}
             </span>
             <button
               onClick={handleLogout}
@@ -275,6 +330,7 @@ export default function Home() {
             key={activeId ?? 'new'}
             conversationId={activeId}
             dataSourceId={activeDataSourceId}
+            conversationContextLoading={conversationContextLoading}
             onConversationCreated={handleConversationCreated}
           />
         </div>

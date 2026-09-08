@@ -151,10 +151,41 @@ export const dataSources = pgTable(
     type: text('type').notNull(), // 'upload' | 'external'
     config: jsonb('config').notNull().$type<Record<string, unknown>>(), // UploadConfig | ExternalConfig
     schemaJson: jsonb('schema_json').$type<Record<string, unknown>>(), // SchemaJson (nullable — populated after upload)
+    dataRevision: integer('data_revision').notNull().default(0),
+    profileRevision: integer('profile_revision').notNull().default(0),
+    profileStatus: text('profile_status').notNull().default('fresh'),
+    profiledAt: timestamp('profiled_at').notNull().defaultNow(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   (table) => ({
     userIdIdx: index('ds_user_idx').on(table.userId),
+  }),
+);
+
+export const cleaningRuns = pgTable(
+  'cleaning_runs',
+  {
+    id: text('id').primaryKey(),
+    dataSourceId: text('data_source_id')
+      .notNull()
+      .references(() => dataSources.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    recipe: jsonb('recipe').notNull().$type<Record<string, unknown>>(),
+    baseRevision: integer('base_revision').notNull(),
+    resultRevision: integer('result_revision'),
+    previewSummary: jsonb('preview_summary').$type<Record<string, unknown>>(),
+    beforeProfile: jsonb('before_profile').$type<Record<string, unknown>>(),
+    afterProfile: jsonb('after_profile').$type<Record<string, unknown>>(),
+    status: text('status').notNull().default('previewed'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    appliedAt: timestamp('applied_at'),
+  },
+  (table) => ({
+    dataSourceIdx: index('cleaning_run_ds_idx').on(table.dataSourceId),
+    userIdIdx: index('cleaning_run_user_idx').on(table.userId),
+    createdAtIdx: index('cleaning_run_created_idx').on(table.createdAt.desc()),
   }),
 );

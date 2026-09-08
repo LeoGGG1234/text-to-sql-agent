@@ -122,7 +122,7 @@
     "id": "multi_02",
     "category": "multi_step",
     "question": "哪个品牌的利润率最高？利润 = 售价 - 成本。",
-    "expectedSql": "SELECT p.brand, SUM((oi.unit_price - p.cost) * oi.quantity) AS profit FROM products p JOIN order_items oi ON p.product_id = oi.product_id GROUP BY p.brand ORDER BY profit DESC LIMIT 1",
+    "expectedSql": "SELECT p.brand, SUM((oi.unit_price - p.cost) * oi.quantity) * 100.0 / NULLIF(SUM(oi.unit_price * oi.quantity), 0) AS profit_margin FROM products p JOIN order_items oi ON p.product_id = oi.product_id GROUP BY p.brand ORDER BY profit_margin DESC LIMIT 1",
     "language": "zh"
   },
   {
@@ -138,5 +138,95 @@
     "question": "Platinum 等级客户贡献了多少比例的总销售额？",
     "expectedSql": "SELECT SUM(o.total_amount) FILTER (WHERE c.loyalty_tier = 'Platinum') * 100.0 / SUM(o.total_amount) AS platinum_pct FROM orders o JOIN customers c ON o.customer_id = c.customer_id",
     "language": "zh"
+  },
+  {
+    "id": "simple_05", "category": "simple", "question": "How many countries are represented in the customer table?", "expectedSql": "SELECT COUNT(DISTINCT country) AS country_count FROM customers", "language": "en"
+  },
+  {
+    "id": "simple_06", "category": "simple", "question": "按名称字母顺序列出所有产品类别。", "expectedSql": "SELECT category_name FROM categories ORDER BY category_name", "language": "zh"
+  },
+  {
+    "id": "simple_07", "category": "simple", "question": "How many orders were cancelled?", "expectedSql": "SELECT COUNT(*) AS cancelled_orders FROM orders WHERE status = 'cancelled'", "language": "en"
+  },
+  {
+    "id": "simple_08", "category": "simple", "question": "订单表里有多少种不同的状态？", "expectedSql": "SELECT COUNT(DISTINCT status) AS status_count FROM orders", "language": "zh"
+  },
+  {
+    "id": "agg_05", "category": "aggregation", "question": "What is the lowest product list price?", "expectedSql": "SELECT MIN(base_price) AS lowest_price FROM products", "language": "en"
+  },
+  {
+    "id": "agg_06", "category": "aggregation", "question": "所有已评分产品的平均评分是多少？", "expectedSql": "SELECT AVG(rating) AS average_rating FROM products WHERE rating IS NOT NULL", "language": "zh"
+  },
+  {
+    "id": "agg_07", "category": "aggregation", "question": "How many units were sold across all line items?", "expectedSql": "SELECT SUM(quantity) AS total_units FROM order_items", "language": "en"
+  },
+  {
+    "id": "agg_08", "category": "aggregation", "question": "订单明细的平均折扣百分比是多少？", "expectedSql": "SELECT AVG(discount_pct) AS average_discount_pct FROM order_items", "language": "zh"
+  },
+  {
+    "id": "join_05", "category": "join", "question": "Show the top 3 brands by line-item revenue.", "expectedSql": "SELECT p.brand, SUM(oi.line_total) AS revenue FROM products p JOIN order_items oi ON p.product_id = oi.product_id GROUP BY p.brand ORDER BY revenue DESC LIMIT 3", "language": "en"
+  },
+  {
+    "id": "join_06", "category": "join", "question": "每个客户所在国家产生了多少订单？", "expectedSql": "SELECT c.country, COUNT(o.order_id) AS order_count FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id GROUP BY c.country ORDER BY order_count DESC", "language": "zh"
+  },
+  {
+    "id": "join_07", "category": "join", "question": "What is completed-order revenue by sales region?", "expectedSql": "SELECT r.region_name, SUM(o.total_amount) AS completed_revenue FROM regions r JOIN orders o ON r.region_id = o.region_id WHERE o.status = 'completed' GROUP BY r.region_name ORDER BY completed_revenue DESC", "language": "en"
+  },
+  {
+    "id": "join_08", "category": "join", "question": "每个产品类别有多少个产品？", "expectedSql": "SELECT c.category_name, COUNT(p.product_id) AS product_count FROM categories c LEFT JOIN products p ON c.category_id = p.category_id GROUP BY c.category_name ORDER BY product_count DESC", "language": "zh"
+  },
+  {
+    "id": "join_09", "category": "join", "question": "Which customer placed the most orders? Return their first name, last name, and order count.", "expectedSql": "SELECT c.first_name, c.last_name, COUNT(o.order_id) AS order_count FROM customers c JOIN orders o ON c.customer_id = o.customer_id GROUP BY c.customer_id, c.first_name, c.last_name ORDER BY order_count DESC LIMIT 1", "language": "en"
+  },
+  {
+    "id": "join_10", "category": "join", "question": "退货订单中，每个产品共退回了多少件？只显示前 5 名。", "expectedSql": "SELECT p.product_name, SUM(oi.quantity) AS returned_units FROM products p JOIN order_items oi ON p.product_id = oi.product_id JOIN orders o ON oi.order_id = o.order_id WHERE o.status = 'returned' GROUP BY p.product_name ORDER BY returned_units DESC LIMIT 5", "language": "zh"
+  },
+  {
+    "id": "time_05", "category": "time_series", "question": "Show daily order counts for January 2026.", "expectedSql": "SELECT DATE_TRUNC('day', order_date) AS day, COUNT(*) AS order_count FROM orders WHERE order_date >= '2026-01-01' AND order_date < '2026-02-01' GROUP BY day ORDER BY day", "language": "en"
+  },
+  {
+    "id": "time_06", "category": "time_series", "question": "最早一笔订单是哪一天？", "expectedSql": "SELECT MIN(order_date) AS first_order_date FROM orders", "language": "zh"
+  },
+  {
+    "id": "time_07", "category": "time_series", "question": "What is the date of the latest order?", "expectedSql": "SELECT MAX(order_date) AS latest_order_date FROM orders", "language": "en"
+  },
+  {
+    "id": "time_08", "category": "time_series", "question": "分别统计 2025 年和 2026 年的订单数量。", "expectedSql": "SELECT EXTRACT(YEAR FROM order_date) AS year, COUNT(*) AS order_count FROM orders WHERE order_date >= '2025-01-01' AND order_date < '2027-01-01' GROUP BY year ORDER BY year", "language": "zh"
+  },
+  {
+    "id": "time_09", "category": "time_series", "question": "Show average order value by month for 2025.", "expectedSql": "SELECT DATE_TRUNC('month', order_date) AS month, AVG(total_amount) AS average_order_value FROM orders WHERE order_date >= '2025-01-01' AND order_date < '2026-01-01' GROUP BY month ORDER BY month", "language": "en"
+  },
+  {
+    "id": "multi_05", "category": "multi_step", "question": "哪个销售区域的退货订单率最高？", "expectedSql": "SELECT r.region_name, COUNT(*) FILTER (WHERE o.status = 'returned') * 100.0 / COUNT(*) AS return_rate FROM regions r JOIN orders o ON r.region_id = o.region_id GROUP BY r.region_name ORDER BY return_rate DESC LIMIT 1", "language": "zh"
+  },
+  {
+    "id": "multi_06", "category": "multi_step", "question": "Which category generated the most gross profit, using unit price minus product cost?", "expectedSql": "SELECT c.category_name, SUM((oi.unit_price - p.cost) * oi.quantity) AS gross_profit FROM categories c JOIN products p ON c.category_id = p.category_id JOIN order_items oi ON p.product_id = oi.product_id GROUP BY c.category_name ORDER BY gross_profit DESC LIMIT 1", "language": "en"
+  },
+  {
+    "id": "multi_07", "category": "multi_step", "question": "有多少客户从未下过订单？", "expectedSql": "SELECT COUNT(*) AS customers_without_orders FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id WHERE o.order_id IS NULL", "language": "zh"
+  },
+  {
+    "id": "multi_08", "category": "multi_step", "question": "How many products have never appeared in an order item?", "expectedSql": "SELECT COUNT(*) AS products_never_ordered FROM products p LEFT JOIN order_items oi ON p.product_id = oi.product_id WHERE oi.item_id IS NULL", "language": "en"
+  },
+  {
+    "id": "multi_09", "category": "multi_step", "question": "有多少客户下过至少两笔订单？", "expectedSql": "SELECT COUNT(*) AS repeat_customers FROM (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(*) >= 2) repeaters", "language": "zh"
+  },
+  {
+    "id": "multi_10", "category": "multi_step", "question": "What is the average number of units per completed order?", "expectedSql": "SELECT AVG(unit_count) AS average_units FROM (SELECT o.order_id, SUM(oi.quantity) AS unit_count FROM orders o JOIN order_items oi ON o.order_id = oi.order_id WHERE o.status = 'completed' GROUP BY o.order_id) completed_orders", "language": "en"
+  },
+  {
+    "id": "null_01", "category": "null_semantics", "question": "有多少产品还没有评分？", "expectedSql": "SELECT COUNT(*) AS unrated_products FROM products WHERE rating IS NULL", "language": "zh"
+  },
+  {
+    "id": "null_02", "category": "null_semantics", "question": "How many customers have no state or province recorded?", "expectedSql": "SELECT COUNT(*) AS customers_without_state FROM customers WHERE state IS NULL", "language": "en"
+  },
+  {
+    "id": "edge_01", "category": "edge_case", "question": "列出所有评分等于全体最高评分的产品名称和评分，包括并列。", "expectedSql": "SELECT product_name, rating FROM products WHERE rating = (SELECT MAX(rating) FROM products) ORDER BY product_name", "language": "zh"
+  },
+  {
+    "id": "edge_02", "category": "edge_case", "question": "How many orders were placed in the year 2030?", "expectedSql": "SELECT COUNT(*) AS order_count FROM orders WHERE order_date >= '2030-01-01' AND order_date < '2031-01-01'", "language": "en"
+  },
+  {
+    "id": "edge_03", "category": "edge_case", "question": "显示每种订单状态及其订单数，按状态名排序。", "expectedSql": "SELECT status, COUNT(*) AS order_count FROM orders GROUP BY status ORDER BY status", "language": "zh"
   }
 ]

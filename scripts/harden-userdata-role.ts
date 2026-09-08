@@ -20,6 +20,7 @@ if (!password) {
 await ensureUserdataReadonlyRole(neon(databaseUrl), {
   password,
   production: true,
+  rotatePassword: true,
 });
 
 console.log('userdata_readonly role created or restored to least privilege.');

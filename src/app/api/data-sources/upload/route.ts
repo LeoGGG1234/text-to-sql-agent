@@ -59,20 +59,16 @@ function decodeBuffer(buf: ArrayBuffer, encoding?: string): string {
  */
 
 import { NextResponse } from 'next/server';
-import * as XLSX from 'xlsx';
-import { neon } from '@neondatabase/serverless';
-import { getDb } from '@/db';
-import * as schema from '@/db/schema';
 import { getSession } from '@/lib/auth-helpers';
 import { detectColumns, NULL_LIKE_VALUES, normalizeFullWidth } from '@/lib/data-sources/type-detector';
 import type { DiscoveredTable, SchemaJson, UploadConfig, QualityProfile } from '@/lib/data-sources/types';
 import { analyzeQuality } from '@/lib/data-sources/quality-analyzer';
-import {
-  ensureUserdataReadonlyRole,
-  USERDATA_SCHEMA,
-} from '@/lib/data-sources/userdata-security';
+import { USERDATA_SCHEMA } from '@/lib/data-sources/userdata-security';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { parseCsvTable } from '@/lib/data-sources/csv-parser';
+import { parseXlsxTable } from '@/lib/data-sources/excel-parser';
+import { withDatabaseTransaction } from '@/lib/database-transaction';
+import { getUploadLimits } from '@/lib/data-sources/upload-limits';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -80,15 +76,18 @@ export const maxDuration = 120; // 2 min — Vercel Pro supports up to 300s
 
 const UPLOAD_SCHEMA = USERDATA_SCHEMA;
 
-// Upload limits — configurable via env vars with sensible defaults.
-const MAX_FILE_BYTES = parseInt(process.env.UPLOAD_MAX_FILE_MB ?? '80', 10) * 1024 * 1024;
-const MAX_ROWS = parseInt(process.env.UPLOAD_MAX_ROWS ?? '200000', 10);
-const BATCH_SIZE = parseInt(process.env.UPLOAD_BATCH_SIZE ?? '2000', 10);
-
 export async function POST(req: Request) {
+  const { maxFileBytes, maxRows, batchSize } = getUploadLimits();
   const session = await getSession(req);
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (!process.env.USERDATA_DATABASE_URL) {
+    return NextResponse.json(
+      { error: 'User-data querying is not configured.' },
+      { status: 503 },
+    );
   }
 
   // Rate limit: 5 uploads/minute per user.
@@ -126,18 +125,24 @@ export async function POST(req: Request) {
       : file.name.replace(/\.[^.]+$/, '');
 
   // Validate size.
-  if (file.size > MAX_FILE_BYTES) {
+  if (file.size > maxFileBytes) {
     return NextResponse.json(
-      { error: `File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Limit: ${(MAX_FILE_BYTES / 1024 / 1024).toFixed(0)} MB.` },
+      { error: `File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Limit: ${(maxFileBytes / 1024 / 1024).toFixed(0)} MB.` },
       { status: 400 },
     );
   }
 
   // Validate type.
   const ext = file.name.split('.').pop()?.toLowerCase();
-  if (!ext || !['csv', 'xlsx', 'xls'].includes(ext)) {
+  if (ext === 'xls') {
     return NextResponse.json(
-      { error: 'Unsupported file type. Upload .csv, .xlsx, or .xls.' },
+      { error: 'Legacy .xls files are not supported. Save the file as .xlsx or CSV and try again.' },
+      { status: 400 },
+    );
+  }
+  if (!ext || !['csv', 'xlsx'].includes(ext)) {
+    return NextResponse.json(
+      { error: 'Unsupported file type. Upload .csv or .xlsx.' },
       { status: 400 },
     );
   }
@@ -160,24 +165,16 @@ export async function POST(req: Request) {
       headers = parsed.headers;
       rows = parsed.rows;
     } else {
-      // Excel: read first sheet.
       const buf = await file.arrayBuffer();
-      const workbook = XLSX.read(new Uint8Array(buf), { type: 'array' });
-      const sheetName = workbook.SheetNames[0];
-      if (!sheetName) {
-        return NextResponse.json({ error: 'Excel file has no sheets.' }, { status: 400 });
+      const parsed = await parseXlsxTable(Buffer.from(buf));
+      if (!parsed.ok) {
+        return NextResponse.json(
+          { error: `Excel parse error: ${parsed.error}` },
+          { status: 400 },
+        );
       }
-      const sheet = workbook.Sheets[sheetName];
-      const data = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
-      if (data.length === 0) {
-        return NextResponse.json({ error: 'Empty Excel sheet.' }, { status: 400 });
-      }
-      // First row as headers, ensure all are strings.
-      headers = data[0].map((h) => String(h ?? ''));
-      rows = data.slice(1).map((row: unknown[]) =>
-        row.map((cell) => String(cell ?? '')),
-      );
-      rows = rows.filter((r) => r.some((c) => c !== ''));
+      headers = parsed.headers;
+      rows = parsed.rows;
     }
   } catch (err) {
     return NextResponse.json(
@@ -189,9 +186,9 @@ export async function POST(req: Request) {
   if (headers.length === 0) {
     return NextResponse.json({ error: 'No columns found in file.' }, { status: 400 });
   }
-  if (rows.length > MAX_ROWS) {
+  if (rows.length > maxRows) {
     return NextResponse.json(
-      { error: `Too many rows (${rows.length.toLocaleString()}). Limit: ${MAX_ROWS.toLocaleString()}.` },
+      { error: `Too many rows (${rows.length.toLocaleString()}). Limit: ${maxRows.toLocaleString()}.` },
       { status: 400 },
     );
   }
@@ -264,74 +261,68 @@ export async function POST(req: Request) {
       { status: 500 },
     );
   }
-  const sql = neon(adminUrl);
-
   let rowCount = 0;
 
-  // ── One-time setup (outside the data transaction) ──────────
-  // Ensure the shared database role remains strictly read-only even if it
-  // already existed or was modified outside the application.
-  await ensureUserdataReadonlyRole(sql, {
-    password: process.env.USERDATA_READONLY_PASSWORD,
-    production: process.env.NODE_ENV === 'production',
-  });
-
   try {
-    await sql.query('BEGIN');
+    await withDatabaseTransaction(adminUrl, async (client) => {
+      await client.query(createDdl);
 
-    await sql.query(createDdl);
-
-    // Batch insert with NULL-like → real NULL conversion.
-    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-      const batch = rows.slice(i, i + BATCH_SIZE);
-      const placeholders = batch.map((_r, bi) =>
-        `(${columns.map((_c, ci) => {
-          const v = (batch[bi][ci] ?? '').trim();
-          if (NULL_LIKE_VALUES.has(v)) return 'NULL';
-          return `'${v.replace(/'/g, "''")}'`;
-        }).join(', ')})`,
-      ).join(', ');
-
-      await sql.query(
-        `INSERT INTO ${UPLOAD_SCHEMA}."${tableName}" (${colNames}) VALUES ${placeholders}`,
+      // Keep each statement below PostgreSQL's 65,535 parameter limit.
+      const effectiveBatchSize = Math.max(
+        1,
+        Math.min(batchSize, Math.floor(60_000 / columns.length)),
       );
-      rowCount += batch.length;
-    }
 
-    // Assemble schema_json from in-memory data (no information_schema round-trip).
-    const discoveredTable: DiscoveredTable = {
-      name: tableName,
-      displayName,
-      rowCount,
-      columns,
-    };
-    const schemaJson: SchemaJson = {
-      tables: [discoveredTable],
-      relationships: [],
-      qualityProfile,
-    };
+      for (let i = 0; i < rows.length; i += effectiveBatchSize) {
+        const batch = rows.slice(i, i + effectiveBatchSize);
+        const values: Array<string | null> = [];
+        const placeholders = batch.map((row) => {
+          const tuple = columns.map((_column, columnIndex) => {
+            const value = (row[columnIndex] ?? '').trim();
+            values.push(NULL_LIKE_VALUES.has(value) ? null : value);
+            return `$${values.length}`;
+          });
+          return `(${tuple.join(', ')})`;
+        });
 
-    const config: UploadConfig = {
-      schemaName: UPLOAD_SCHEMA,
-      tables: [{ name: tableName, displayName, rowCount }],
-      originalFileName: file.name,
-      fileSizeBytes: file.size,
-    };
+        await client.query(
+          `INSERT INTO ${UPLOAD_SCHEMA}."${tableName}" (${colNames}) VALUES ${placeholders.join(', ')}`,
+          values,
+        );
+        rowCount += batch.length;
+      }
 
-    // Insert metadata into data_sources.
-    const db = getDb();
-    await db.insert(schema.dataSources).values({
-      id: dsId,
-      userId: session.user.id,
-      name: displayName,
-      type: 'upload',
-      config: config as unknown as Record<string, unknown>,
-      schemaJson: schemaJson as unknown as Record<string, unknown>,
+      const discoveredTable: DiscoveredTable = {
+        name: tableName,
+        displayName,
+        rowCount,
+        columns,
+      };
+      const schemaJson: SchemaJson = {
+        tables: [discoveredTable],
+        relationships: [],
+        qualityProfile,
+      };
+      const config: UploadConfig = {
+        schemaName: UPLOAD_SCHEMA,
+        tables: [{ name: tableName, displayName, rowCount }],
+        originalFileName: file.name,
+        fileSizeBytes: file.size,
+      };
+
+      await client.query(
+        `INSERT INTO data_sources (id, user_id, name, type, config, schema_json)
+         VALUES ($1, $2, $3, 'upload', $4::jsonb, $5::jsonb)`,
+        [
+          dsId,
+          session.user.id,
+          displayName,
+          JSON.stringify(config),
+          JSON.stringify(schemaJson),
+        ],
+      );
     });
-
-    await sql.query('COMMIT');
   } catch (err) {
-    await sql.query('ROLLBACK');
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
       { error: `Upload failed: ${message}` },

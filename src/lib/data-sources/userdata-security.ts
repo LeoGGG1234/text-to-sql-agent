@@ -15,6 +15,8 @@ type NeonSql = NeonQueryFunction<false, false>;
 export interface UserdataRoleOptions {
   password?: string;
   production: boolean;
+  /** Rotate the login password. Intended for the explicit deployment script. */
+  rotatePassword?: boolean;
 }
 
 export async function ensureUserdataReadonlyRole(
@@ -24,11 +26,29 @@ export async function ensureUserdataReadonlyRole(
   await sql.query(`CREATE SCHEMA IF NOT EXISTS ${USERDATA_SCHEMA}`);
 
   const [roleRow] = await sql.query(
-    `SELECT EXISTS (
-       SELECT FROM pg_roles WHERE rolname = '${USERDATA_READONLY_ROLE}'
-     ) AS exists`,
+    `SELECT rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole,
+            rolreplication, rolbypassrls,
+            EXISTS (
+              SELECT 1 FROM pg_auth_members membership
+              WHERE membership.member = role.oid
+            ) AS has_memberships
+     FROM pg_roles role
+     WHERE rolname = $1`,
+    [USERDATA_READONLY_ROLE],
   );
-  const roleExists = Boolean((roleRow as { exists?: boolean } | undefined)?.exists);
+  const roleState = roleRow as
+    | {
+        rolcanlogin?: boolean;
+        rolinherit?: boolean;
+        rolsuper?: boolean;
+        rolcreatedb?: boolean;
+        rolcreaterole?: boolean;
+        rolreplication?: boolean;
+        rolbypassrls?: boolean;
+        has_memberships?: boolean;
+      }
+    | undefined;
+  const roleExists = roleState !== undefined;
 
   if (!roleExists) {
     if (!options.password && options.production) {
@@ -59,6 +79,72 @@ export async function ensureUserdataReadonlyRole(
       throw new Error('Failed to safely construct userdata read-only role DDL.');
     }
     await sql.query(ddl);
+  } else {
+    // Neon project owners can manage ordinary roles, but PostgreSQL rejects an
+    // ALTER ROLE statement that mentions SUPERUSER even when it only requests
+    // NOSUPERUSER. Fail closed for attributes that require a platform admin,
+    // and repair the ordinary role attributes without privileged clauses.
+    const privilegedAttributes = [
+      roleState.rolsuper !== false ? 'SUPERUSER' : null,
+      roleState.rolreplication !== false ? 'REPLICATION' : null,
+      roleState.rolbypassrls !== false ? 'BYPASSRLS' : null,
+    ].filter((attribute): attribute is string => attribute !== null);
+    if (privilegedAttributes.length > 0) {
+      throw new Error(
+        `userdata_readonly has unsafe privileged attributes (${privilegedAttributes.join(', ')}). ` +
+          'A PostgreSQL platform administrator must remove them before deployment.',
+      );
+    }
+
+    const repairClauses = [
+      roleState.rolcanlogin === true ? null : 'LOGIN',
+      roleState.rolinherit === false ? null : 'NOINHERIT',
+      roleState.rolcreatedb === false ? null : 'NOCREATEDB',
+      roleState.rolcreaterole === false ? null : 'NOCREATEROLE',
+    ].filter((clause): clause is string => clause !== null);
+    if (repairClauses.length > 0) {
+      await sql.query(
+        `ALTER ROLE ${USERDATA_READONLY_ROLE} WITH ${repairClauses.join(' ')}`,
+      );
+    }
+
+    if (roleState.has_memberships) {
+      await sql.query(`DO $userdata_memberships$
+DECLARE
+  parent_role text;
+BEGIN
+  FOR parent_role IN
+    SELECT parent.rolname
+    FROM pg_auth_members membership
+    JOIN pg_roles parent ON parent.oid = membership.roleid
+    JOIN pg_roles member ON member.oid = membership.member
+    WHERE member.rolname = '${USERDATA_READONLY_ROLE}'
+  LOOP
+    EXECUTE format('REVOKE %I FROM ${USERDATA_READONLY_ROLE}', parent_role);
+  END LOOP;
+END
+$userdata_memberships$;`);
+    }
+
+    if (options.rotatePassword) {
+      if (!options.password) {
+        throw new Error(
+          'USERDATA_READONLY_PASSWORD is required when rotating the role password.',
+        );
+      }
+      const [ddlRow] = await sql.query(
+        `SELECT format(
+           'ALTER ROLE ${USERDATA_READONLY_ROLE} WITH PASSWORD %L',
+           $1::text
+         ) AS ddl`,
+        [options.password],
+      );
+      const ddl = (ddlRow as { ddl?: unknown } | undefined)?.ddl;
+      if (typeof ddl !== 'string') {
+        throw new Error('Failed to safely construct userdata password DDL.');
+      }
+      await sql.query(ddl);
+    }
   }
 
   // PostgreSQL/Neon safe defaults cover privileged role attributes. Enforce

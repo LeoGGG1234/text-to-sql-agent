@@ -3,6 +3,7 @@
  */
 
 export type DataSourceType = 'retail' | 'upload' | 'external';
+export type ProfileStatus = 'fresh' | 'stale' | 'running' | 'failed';
 
 // ─── Schema Discovery ────────────────────────────────────────
 

@@ -53,4 +53,8 @@ describe('resultSetsMatch', () => {
     const b = [{ product_name: 'Widget', total_revenue: '5000.00' }];
     expect(resultSetsMatch(a, b)).toBe(true);
   });
+
+  it('rejects swapped projected values instead of treating rows as value bags', () => {
+    expect(resultSetsMatch([{ first: 10, second: 20 }], [{ a: 20, b: 10 }])).toBe(false);
+  });
 });

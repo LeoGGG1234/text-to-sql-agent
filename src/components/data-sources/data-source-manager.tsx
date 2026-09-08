@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { UploadForm } from './upload-form';
 import { SchemaPreview, type TableInfo } from './schema-preview';
+import type { ProfileStatus, QualityProfile } from '@/lib/data-sources/types';
 
 interface DataSource {
   id: string;
@@ -16,6 +17,8 @@ interface DataSource {
   createdAt: string;
   updatedAt: string;
   schemaJson?: Record<string, unknown> | null;
+  profileStatus: ProfileStatus;
+  profiledAt?: string | null;
 }
 
 interface Props {
@@ -32,6 +35,7 @@ export function DataSourceManager({ open, onClose, onSelect, selectedId, onViewD
   const [showUpload, setShowUpload] = useState(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [profiling, setProfiling] = useState<string | null>(null);
 
   const fetchSources = useCallback(async () => {
     setLoading(true);
@@ -56,6 +60,13 @@ export function DataSourceManager({ open, onClose, onSelect, selectedId, onViewD
       if (previewId === id) setPreviewId(null);
     }
     setDeleting(null);
+  }
+
+  async function handleProfile(id: string) {
+    setProfiling(id);
+    const res = await fetch(`/api/data-sources/${id}/profile`, { method: 'POST' });
+    if (res.ok) await fetchSources();
+    setProfiling(null);
   }
 
   if (!open) return null;
@@ -151,6 +162,17 @@ export function DataSourceManager({ open, onClose, onSelect, selectedId, onViewD
                     View Data
                   </button>
                   <button
+                    onClick={() => handleProfile(ds.id)}
+                    disabled={profiling === ds.id}
+                    className={`text-[11px] transition disabled:opacity-50 ${
+                      ds.profileStatus === 'stale'
+                        ? 'text-amber-400 hover:text-amber-300'
+                        : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                  >
+                    {profiling === ds.id ? 'Profiling...' : ds.profileStatus === 'stale' ? 'Re-profile' : 'Profile'}
+                  </button>
+                  <button
                     onClick={() => handleDelete(ds.id)}
                     disabled={deleting === ds.id}
                     className="text-[11px] text-zinc-600 hover:text-red-400 transition disabled:opacity-50"
@@ -164,8 +186,10 @@ export function DataSourceManager({ open, onClose, onSelect, selectedId, onViewD
                   <SchemaPreview
                     tables={(ds.schemaJson as unknown as { tables?: TableInfo[] }).tables}
                     qualityProfile={
-                      (ds.schemaJson as unknown as { qualityProfile?: import('@/lib/data-sources/types').QualityProfile }).qualityProfile ?? null
+                      (ds.schemaJson as unknown as { qualityProfile?: QualityProfile }).qualityProfile ?? null
                     }
+                    profileStatus={ds.profileStatus}
+                    profiledAt={ds.profiledAt}
                   />
                 )}
               </div>

@@ -16,10 +16,18 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [guestMode, setGuestMode] = useState(false);
   const [enteringGuest, setEnteringGuest] = useState(false);
+  const upgradeRequested =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('upgrade') === '1';
+  const isAnonymous = Boolean(
+    session &&
+      (session.user as typeof session.user & { isAnonymous?: boolean })
+        .isAnonymous,
+  );
 
   // Redirect if already authenticated (including guest) or in local dev mode
   useEffect(() => {
-    if (session && !isPending) {
+    if (session && !isPending && !(upgradeRequested && isAnonymous)) {
       router.replace('/');
       return;
     }
@@ -30,7 +38,7 @@ export default function LoginPage() {
         if (data.guestMode) setGuestMode(true);
       })
       .catch(() => {});
-  }, [session, isPending, router]);
+  }, [session, isPending, router, upgradeRequested, isAnonymous]);
 
   const enterGuestMode = async () => {
     setEnteringGuest(true);
@@ -56,7 +64,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      if (isRegister) {
+      if (isRegister || upgradeRequested) {
         const res = await signUp.email({
           email,
           password,
@@ -97,7 +105,7 @@ export default function LoginPage() {
     );
   }
 
-  if (session) return null; // will redirect
+  if (session && !(upgradeRequested && isAnonymous)) return null; // will redirect
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-zinc-950 px-4">
@@ -107,13 +115,17 @@ export default function LoginPage() {
           <h1 className="text-3xl mb-2">📊</h1>
           <h2 className="text-xl font-bold text-white">数据问答 Agent</h2>
           <p className="text-sm text-zinc-500 mt-1">
-            {isRegister ? '创建账号' : '用自然语言查询数据库'}
+            {upgradeRequested
+              ? '创建账号并保留当前 Demo 数据'
+              : isRegister
+                ? '创建账号'
+                : '用自然语言查询数据库'}
           </p>
         </div>
 
         {/* Form */}
         <form onSubmit={onSubmit} className="space-y-4">
-          {isRegister && (
+          {(isRegister || upgradeRequested) && (
             <div>
               <label htmlFor="name" className="block text-xs text-zinc-400 mb-1">
                 Name
@@ -173,14 +185,14 @@ export default function LoginPage() {
           >
             {loading
               ? 'Please wait...'
-              : isRegister
+              : isRegister || upgradeRequested
                 ? 'Create Account'
                 : 'Sign In'}
           </button>
         </form>
 
         {/* Guest mode — "Try Demo" button */}
-        {guestMode && (
+        {guestMode && !upgradeRequested && (
           <>
             <div className="relative my-6">
               <div className="absolute inset-0 flex items-center">
@@ -204,7 +216,7 @@ export default function LoginPage() {
         )}
 
         {/* Toggle */}
-        <p className="mt-6 text-center text-xs text-zinc-500">
+        {!upgradeRequested && <p className="mt-6 text-center text-xs text-zinc-500">
           {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
           <button
             onClick={() => {
@@ -215,7 +227,7 @@ export default function LoginPage() {
           >
             {isRegister ? 'Sign in' : 'Create one'}
           </button>
-        </p>
+        </p>}
       </div>
     </div>
   );

@@ -126,6 +126,7 @@ describe('security integration against disposable Neon database', () => {
     readonlyUrl.username = userdataSecurity.USERDATA_READONLY_ROLE;
     readonlyUrl.password = INTEGRATION_READONLY_PASSWORD;
     readonlyDatabaseUrl = readonlyUrl.toString();
+    process.env.USERDATA_DATABASE_URL = readonlyDatabaseUrl;
     auth = getAuth();
     setupCompleted = true;
   });
@@ -207,6 +208,13 @@ describe('security integration against disposable Neon database', () => {
       { params: Promise.resolve({ id: conversationId }) },
     );
     expect(ownedConversation.status).toBe(200);
+    await expect(ownedConversation.json()).resolves.toEqual(
+      expect.objectContaining({
+        id: conversationId,
+        dataSourceId,
+        dataSourceName: 'Integration source',
+      }),
+    );
 
     const email = `integration-${crypto.randomUUID()}@example.test`;
     const signUpResponse = await auth.handler(
@@ -301,6 +309,88 @@ describe('security integration against disposable Neon database', () => {
     } finally {
       await sql.query(`DROP TABLE IF EXISTS userdata."${allowedTable}"`);
       await sql.query(`DROP TABLE IF EXISTS userdata."${deniedTable}"`);
+    }
+  });
+
+  it('previews and atomically applies an owned cleaning recipe', async () => {
+    const databaseUrl = requireIntegrationTarget();
+    const guest = await createAnonymousSession();
+    const dataSourceId = crypto.randomUUID();
+    const tableName = `ds_${dataSourceId.replaceAll('-', '_')}`;
+    const sql = neon(databaseUrl);
+    const [{ getDb }, schema] = await Promise.all([
+      import('../../src/db'),
+      import('../../src/db/schema'),
+    ]);
+    const db = getDb();
+    const table = {
+      name: tableName,
+      displayName: 'dirty.csv',
+      rowCount: 2,
+      columns: [
+        { name: 'customer', displayName: 'Customer', type: 'TEXT', semanticType: 'TEXT' as const, nullable: false, hint: null },
+        { name: 'amount', displayName: 'Amount', type: 'TEXT', semanticType: 'NUMERIC' as const, nullable: false, hint: null },
+        { name: 'order_date', displayName: 'Order Date', type: 'TEXT', semanticType: 'DATE' as const, nullable: false, hint: null },
+      ],
+    };
+
+    await sql.query(`CREATE TABLE userdata."${tableName}" (
+      _row_id SERIAL PRIMARY KEY, customer TEXT, amount TEXT, order_date TEXT
+    )`);
+    await sql.query(
+      `INSERT INTO userdata."${tableName}" (customer, amount, order_date)
+       VALUES (' A ', '￥1,000', '2026/9/8'), ('A', '1000', '2026-09-08')`,
+    );
+    await db.insert(schema.dataSources).values({
+      id: dataSourceId,
+      userId: guest.userId,
+      name: 'Dirty integration data',
+      type: 'upload',
+      config: { schemaName: 'userdata', tables: [{ name: tableName, displayName: 'dirty.csv', rowCount: 2 }] },
+      schemaJson: { tables: [table], relationships: [] },
+    });
+
+    try {
+      const [previewRoute, applyRoute] = await Promise.all([
+        import('../../src/app/api/data-sources/[id]/cleaning/preview/route'),
+        import('../../src/app/api/data-sources/[id]/cleaning/apply/route'),
+      ]);
+      const previewResponse = await previewRoute.POST(
+        new Request(`http://localhost:3000/api/data-sources/${dataSourceId}/cleaning/preview`, {
+          method: 'POST',
+          headers: { cookie: guest.cookie, 'content-type': 'application/json' },
+          body: JSON.stringify({ preset: 'standard' }),
+        }),
+        { params: Promise.resolve({ id: dataSourceId }) },
+      );
+      expect(previewResponse.status).toBe(200);
+      const preview = await previewResponse.json() as { runId: string; summary: { affectedRows: number; removedRows: number } };
+      expect(preview.summary).toMatchObject({ affectedRows: 2, removedRows: 1 });
+
+      const applyResponse = await applyRoute.POST(
+        new Request(`http://localhost:3000/api/data-sources/${dataSourceId}/cleaning/apply`, {
+          method: 'POST',
+          headers: { cookie: guest.cookie, 'content-type': 'application/json' },
+          body: JSON.stringify({ runId: preview.runId }),
+        }),
+        { params: Promise.resolve({ id: dataSourceId }) },
+      );
+      expect(applyResponse.status).toBe(200);
+
+      const cleaned = await sql.query(
+        `SELECT customer, amount, order_date FROM userdata."${tableName}" ORDER BY _row_id`,
+      );
+      expect(cleaned).toEqual([{ customer: 'A', amount: '1000', order_date: '2026-09-08' }]);
+      const [metadata] = await db.select({
+        dataRevision: schema.dataSources.dataRevision,
+        profileRevision: schema.dataSources.profileRevision,
+        profileStatus: schema.dataSources.profileStatus,
+      }).from(schema.dataSources).where(
+        (await import('drizzle-orm')).eq(schema.dataSources.id, dataSourceId),
+      );
+      expect(metadata).toEqual({ dataRevision: 1, profileRevision: 1, profileStatus: 'fresh' });
+    } finally {
+      await sql.query(`DROP TABLE IF EXISTS userdata."${tableName}"`);
     }
   });
 });

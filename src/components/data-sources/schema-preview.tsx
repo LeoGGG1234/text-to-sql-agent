@@ -5,7 +5,7 @@
  * Now includes data quality badges for uploaded data sources.
  */
 
-import type { ColumnProfile, QualityProfile } from '@/lib/data-sources/types';
+import type { ColumnProfile, ProfileStatus, QualityProfile } from '@/lib/data-sources/types';
 
 export interface ColumnInfo {
   name: string;
@@ -26,9 +26,11 @@ export interface TableInfo {
 interface Props {
   tables?: TableInfo[] | null | undefined;
   qualityProfile?: QualityProfile | null;
+  profileStatus?: ProfileStatus;
+  profiledAt?: string | null;
 }
 
-export function SchemaPreview({ tables, qualityProfile }: Props) {
+export function SchemaPreview({ tables, qualityProfile, profileStatus, profiledAt }: Props) {
   if (!tables?.length) {
     return (
       <div className="px-3 py-2 text-xs text-zinc-600">
@@ -39,6 +41,16 @@ export function SchemaPreview({ tables, qualityProfile }: Props) {
 
   return (
     <div className="space-y-2 px-1">
+      {profileStatus === 'stale' && (
+        <div className="rounded-lg border border-amber-800/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300">
+          Quality profile is stale because the data changed. Re-profile before relying on these counts.
+        </div>
+      )}
+      {profiledAt && profileStatus !== 'stale' && (
+        <div className="px-1 text-[10px] text-zinc-600">
+          Profiled {new Date(profiledAt).toLocaleString()}
+        </div>
+      )}
       {tables.map((t, ti) => (
         <div key={ti} className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
           <div className="px-3 py-2 border-b border-zinc-800 flex items-center justify-between">

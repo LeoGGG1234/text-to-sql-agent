@@ -41,10 +41,33 @@ export async function checkDeploymentReadiness(
       : 'public.user.is_anonymous is missing or has the wrong constraints',
   });
 
+  const [applicationSchema] = await sql.query(
+    `SELECT
+       to_regclass('public.cleaning_runs') IS NOT NULL AS cleaning_runs_exists,
+       COUNT(*) FILTER (
+         WHERE table_schema = 'public' AND table_name = 'data_sources'
+           AND column_name IN ('data_revision', 'profile_revision', 'profile_status', 'profiled_at')
+       )::int AS revision_columns
+     FROM information_schema.columns`,
+  );
+  const applicationState = applicationSchema as
+    | { cleaning_runs_exists?: boolean; revision_columns?: number }
+    | undefined;
+  const applicationReady =
+    applicationState?.cleaning_runs_exists === true &&
+    applicationState.revision_columns === 4;
+  results.push({
+    name: 'data quality migration',
+    ok: applicationReady,
+    detail: applicationReady
+      ? 'cleaning_runs and data-source profile revision columns are present'
+      : 'run the latest Drizzle migration before deploying this application build',
+  });
+
   if (!options.checkUserdataSecurity) return results;
 
   const [role] = await sql.query(
-    `SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+    `SELECT rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole,
             rolreplication, rolbypassrls,
             EXISTS (
               SELECT 1 FROM pg_auth_members membership
@@ -57,6 +80,7 @@ export async function checkDeploymentReadiness(
   const roleState = role as
     | {
         rolcanlogin?: boolean;
+        rolinherit?: boolean;
         rolsuper?: boolean;
         rolcreatedb?: boolean;
         rolcreaterole?: boolean;
@@ -67,6 +91,7 @@ export async function checkDeploymentReadiness(
     | undefined;
   const roleReady =
     roleState?.rolcanlogin === true &&
+    roleState.rolinherit === false &&
     roleState.rolsuper === false &&
     roleState.rolcreatedb === false &&
     roleState.rolcreaterole === false &&

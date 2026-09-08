@@ -26,6 +26,7 @@ vi.mock('@/db/schema', () => ({
   dataSources: {
     id: 'dataSource.id',
     userId: 'dataSource.userId',
+    name: 'dataSource.name',
     type: 'dataSource.type',
     config: 'dataSource.config',
     schemaJson: 'dataSource.schemaJson',
@@ -75,6 +76,7 @@ describe('ownership-aware resource helpers', () => {
     const dataSource = {
       id: 'data-source-a',
       userId: 'user-a',
+      name: 'Owned source',
       type: 'upload',
       config: {},
       schemaJson: null,

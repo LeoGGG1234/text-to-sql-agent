@@ -16,8 +16,12 @@ describe('deployment readiness gate', () => {
         { is_nullable: 'NO', column_default: 'false' },
       ])
       .mockResolvedValueOnce([
+        { cleaning_runs_exists: true, revision_columns: 4 },
+      ])
+      .mockResolvedValueOnce([
         {
           rolcanlogin: true,
+          rolinherit: false,
           rolsuper: false,
           rolcreatedb: false,
           rolcreaterole: false,
@@ -35,17 +39,18 @@ describe('deployment readiness gate', () => {
       checkUserdataSecurity: true,
     });
 
-    expect(results).toHaveLength(4);
+    expect(results).toHaveLength(5);
     expect(results.every((result) => result.ok)).toBe(true);
   });
 
   it('fails when the guest migration has not been applied', async () => {
-    query.mockResolvedValueOnce([]);
+    query.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     await expect(
       checkDeploymentReadiness(sql, { checkUserdataSecurity: false }),
     ).resolves.toEqual([
       expect.objectContaining({ name: 'guest migration', ok: false }),
+      expect.objectContaining({ name: 'data quality migration', ok: false }),
     ]);
   });
 
@@ -54,14 +59,17 @@ describe('deployment readiness gate', () => {
       .mockResolvedValueOnce([
         { is_nullable: 'NO', column_default: 'false' },
       ])
+      .mockResolvedValueOnce([
+        { cleaning_runs_exists: true, revision_columns: 4 },
+      ])
       .mockResolvedValueOnce([]);
 
     const results = await checkDeploymentReadiness(sql, {
       checkUserdataSecurity: true,
     });
 
-    expect(results).toHaveLength(4);
-    expect(results.slice(1).every((result) => !result.ok)).toBe(true);
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(results).toHaveLength(5);
+    expect(results.slice(2).every((result) => !result.ok)).toBe(true);
+    expect(query).toHaveBeenCalledTimes(3);
   });
 });

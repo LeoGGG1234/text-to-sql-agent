@@ -20,8 +20,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { createHash } from 'crypto';
+import { execFileSync } from 'child_process';
 import { neon } from '@neondatabase/serverless';
 import { resultSetsMatch, aggregate, type CaseScore } from './metrics';
+import { validateSql } from '../src/lib/sql-validator';
+import { DEFAULT_PROMPT_VARIANT } from '../src/lib/prompts';
+import { PROVIDERS, type ProviderId } from '../src/lib/providers';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -57,7 +62,25 @@ interface CaseResult extends CaseScore {
   refRowCount: number;
   genRowCount: number;
   latencyMs: number;
+  toolStepCount: number;
+  retryCount: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  estimatedCostUsd: number | null;
+  failureCategory?: string;
   error?: string;
+}
+
+interface EvalMetadata {
+  generatedAt: string;
+  commitSha: string;
+  provider: string;
+  model: string;
+  promptVariant: string;
+  datasetVersion: string;
+  datasetSha256: string;
+  apiUrl: string;
+  numericTolerance: number;
 }
 
 async function main() {
@@ -66,7 +89,7 @@ async function main() {
   const args = process.argv.slice(2);
   const provider = getArg(args, '--provider', 'deepseek');
   const model = getArg(args, '--model', '');
-  const promptVariant = getArg(args, '--prompt-variant', '');
+  const promptVariant = getArg(args, '--prompt-variant', DEFAULT_PROMPT_VARIANT);
   const limit = parseInt(getArg(args, '--limit', '0'), 10);
   const baseUrl = process.env.EVAL_API_URL ?? 'http://localhost:3000';
 
@@ -81,6 +104,19 @@ async function main() {
     fs.readFileSync(path.join(__dirname, 'test-cases.json'), 'utf-8'),
   );
   const selected = limit > 0 ? cases.slice(0, limit) : cases;
+  const resolvedModel = model || PROVIDERS[provider as ProviderId]?.defaultModel || 'unknown';
+  const datasetText = fs.readFileSync(path.join(__dirname, 'test-cases.json'), 'utf-8');
+  const metadata: EvalMetadata = {
+    generatedAt: new Date().toISOString(),
+    commitSha: currentCommitSha(),
+    provider,
+    model: resolvedModel,
+    promptVariant,
+    datasetVersion: 'retail-v1',
+    datasetSha256: createHash('sha256').update(datasetText).digest('hex'),
+    apiUrl: baseUrl,
+    numericTolerance: 0.01,
+  };
 
   console.log(`\n🧪 Text-to-SQL Agent Eval\n`);
   console.log(`   Provider: ${provider}   Model: ${model || 'default'}`);
@@ -109,7 +145,8 @@ async function main() {
 
       const text = await res.text();
       const latencyMs = Date.now() - start;
-      const generatedSql = extractLastRunSql(text);
+      const stream = inspectStream(text);
+      const generatedSql = stream.generatedSql;
 
       // Reference result set.
       const refRows = (await sql.query(tc.expectedSql)) as Record<string, unknown>[];
@@ -120,19 +157,27 @@ async function main() {
       let genRows: Record<string, unknown>[] = [];
 
       if (generatedSql) {
+        const validation = validateSql(generatedSql);
         try {
-          genRows = (await sql.query(generatedSql)) as Record<string, unknown>[];
+          if (!validation.valid) throw new Error(`VALIDATION_ERROR: ${validation.error}`);
+          genRows = (await sql.query(validation.sql)) as Record<string, unknown>[];
           validity = 1;
-          schemaAdherence = 1; // ran without unknown-column error
+          schemaAdherence = 1;
           execAccuracy = resultSetsMatch(genRows, refRows) ? 1 : 0;
-        } catch (e) {
-          const msg = e instanceof Error ? e.message.toLowerCase() : '';
-          // It produced SQL but it failed to execute.
-          if (!(msg.includes('column') && msg.includes('does not exist'))) {
-            schemaAdherence = 1;
-          }
+        } catch {
+          schemaAdherence = 0;
         }
       }
+
+      const failureCategory = execAccuracy
+        ? undefined
+        : !generatedSql
+          ? 'NO_SQL'
+          : !validity
+            ? 'INVALID_OR_EXECUTION_ERROR'
+            : genRows.length !== refRows.length
+              ? 'ROW_COUNT_MISMATCH'
+              : 'RESULT_VALUE_OR_SHAPE_MISMATCH';
 
       results.push({
         id: tc.id,
@@ -145,6 +190,12 @@ async function main() {
         execAccuracy,
         schemaAdherence,
         latencyMs,
+        toolStepCount: stream.toolStepCount,
+        retryCount: Math.max(0, stream.runSqlCount - 1),
+        promptTokens: stream.promptTokens,
+        completionTokens: stream.completionTokens,
+        estimatedCostUsd: null,
+        failureCategory,
       });
 
       const mark = execAccuracy ? '✅' : validity ? '⚠️ ' : '❌';
@@ -161,13 +212,19 @@ async function main() {
         execAccuracy: 0,
         schemaAdherence: 0,
         latencyMs: Date.now() - start,
+        toolStepCount: 0,
+        retryCount: 0,
+        promptTokens: null,
+        completionTokens: null,
+        estimatedCostUsd: null,
+        failureCategory: 'HARNESS_ERROR',
         error: err instanceof Error ? err.message : String(err),
       });
       console.log(`❌ ERROR: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  writeReports(results, provider, model, promptVariant);
+  writeReports(results, metadata);
 }
 
 // ─── Stream parsing ──────────────────────────────────────────────
@@ -176,53 +233,69 @@ async function main() {
  * Extract the SQL string from the LAST runSql tool call in the AI SDK data
  * stream. Tool calls arrive as `9:{...}` lines with toolName + args.
  */
-function extractLastRunSql(stream: string): string | null {
+export function inspectStream(stream: string): {
+  generatedSql: string | null;
+  toolStepCount: number;
+  runSqlCount: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+} {
   let last: string | null = null;
+  let toolStepCount = 0;
+  let runSqlCount = 0;
+  let promptTokens: number | null = null;
+  let completionTokens: number | null = null;
   for (const line of stream.split('\n')) {
     const t = line.trim();
     const colon = t.indexOf(':');
     if (colon <= 0) continue;
     const code = t.slice(0, colon);
-    if (code !== '9') continue;
     try {
       const data = JSON.parse(t.slice(colon + 1));
-      if (data?.toolName === 'runSql' && data?.args?.sql) {
-        last = String(data.args.sql);
+      if (code === '9' && data?.toolName) {
+        toolStepCount++;
+        if (data.toolName === 'runSql') {
+          runSqlCount++;
+          if (data?.args?.sql) last = String(data.args.sql);
+        }
+      }
+      if (data?.usage) {
+        if (typeof data.usage.promptTokens === 'number') promptTokens = data.usage.promptTokens;
+        if (typeof data.usage.completionTokens === 'number') completionTokens = data.usage.completionTokens;
       }
     } catch {
       /* ignore malformed line */
     }
   }
-  return last;
+  return { generatedSql: last, toolStepCount, runSqlCount, promptTokens, completionTokens };
 }
 
 // ─── Reporting ───────────────────────────────────────────────────
 
 function writeReports(
   results: CaseResult[],
-  provider: string,
-  model: string,
-  promptVariant: string,
+  metadata: EvalMetadata,
 ) {
   const agg = aggregate(results);
   const byCat: Record<string, CaseResult[]> = {};
   for (const r of results) (byCat[r.category] ??= []).push(r);
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const slug = [provider, promptVariant]
+  const slug = [metadata.provider, metadata.promptVariant]
     .filter(Boolean)
     .join('-')
     .replace(/[^a-z0-9]/g, '-');
 
   fs.writeFileSync(
     path.join(__dirname, `results-${slug}-${ts}.json`),
-    JSON.stringify(results, null, 2),
+    JSON.stringify({ metadata, aggregate: agg, results }, null, 2),
   );
 
   const lines: string[] = [
     `# Text-to-SQL Agent Eval Report`,
     ``,
-    `**Provider**: ${provider}　**Model**: ${model || 'default'}　**Prompt**: ${promptVariant || 'default'}　**Date**: ${new Date().toISOString()}`,
+    `**Provider**: ${metadata.provider}　**Model**: ${metadata.model}　**Prompt**: ${metadata.promptVariant}　**Date**: ${metadata.generatedAt}`,
+    `**Commit**: ${metadata.commitSha}　**Dataset**: ${metadata.datasetVersion} (${metadata.datasetSha256.slice(0, 12)})`,
     ``,
     `## Overall`,
     ``,
@@ -258,7 +331,7 @@ function writeReports(
 
   console.log(`\n${'═'.repeat(56)}`);
   console.log(
-    `📊 ${provider}/${model || 'default'} (prompt=${promptVariant || 'default'})`,
+    `📊 ${metadata.provider}/${metadata.model} (prompt=${metadata.promptVariant})`,
   );
   console.log(`   Validity:    ${(agg.validityRate * 100).toFixed(1)}%`);
   console.log(`   Exec acc:    ${(agg.execAccuracy * 100).toFixed(1)}%`);
@@ -266,12 +339,22 @@ function writeReports(
   console.log(`   Report: ${reportPath}\n`);
 }
 
+function currentCommitSha(): string {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: rootDir, encoding: 'utf8' }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
 function getArg(args: string[], flag: string, fallback: string): string {
   const i = args.indexOf(flag);
   return i >= 0 && i + 1 < args.length ? args[i + 1] : fallback;
 }
 
-main().catch((err) => {
-  console.error('Eval failed:', err);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('Eval failed:', err);
+    process.exit(1);
+  });
+}

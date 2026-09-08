@@ -10,6 +10,7 @@ import { getSession } from '@/lib/auth-helpers';
 import { db, schema } from '@/db';
 import { eq, and } from 'drizzle-orm';
 import { getOwnedConversation } from '@/lib/conversation-manager';
+import { getOwnedDataSource } from '@/lib/data-sources/schema-manager';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,6 +32,10 @@ export async function GET(
     return Response.json({ error: 'Conversation not found' }, { status: 404 });
   }
 
+  const dataSource = conv.dataSourceId
+    ? await getOwnedDataSource(conv.dataSourceId, session.user.id)
+    : null;
+
   const messages = await db
     .select()
     .from(schema.chatMessages)
@@ -41,7 +46,8 @@ export async function GET(
   return Response.json({
     id: conv.id,
     title: conv.title,
-    dataSourceId: conv.dataSourceId ?? null,
+    dataSourceId: dataSource?.id ?? null,
+    dataSourceName: dataSource?.name ?? null,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     messages: messages.map((m) => ({

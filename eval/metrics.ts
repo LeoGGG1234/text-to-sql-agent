@@ -22,8 +22,9 @@ export interface CaseScore {
  * Compare two result sets for equality, order-insensitively, with a numeric
  * tolerance for floating-point money columns.
  *
- * Rows are normalized to sorted key/value strings and multiset-compared, so
- * row order and column order do not matter — only the data does.
+ * Row order and aliases do not matter, but column position does. Treating a
+ * row as an unordered value bag can incorrectly accept a query that swaps two
+ * projected metrics.
  */
 export function resultSetsMatch(
   a: Record<string, unknown>[],
@@ -33,21 +34,22 @@ export function resultSetsMatch(
   if (a.length !== b.length) return false;
   if (a.length === 0) return true;
 
-  // Build multisets of normalized VALUE bags (ignore column names, since the
-  // agent may alias differently than the reference).
-  const bagA = a.map((r) => valueBag(r)).sort();
-  const bagB = b.map((r) => valueBag(r)).sort();
-
-  for (let i = 0; i < bagA.length; i++) {
-    if (!bagsClose(bagA[i], bagB[i], tolerance)) return false;
+  const rowsA = a.map(rowTuple);
+  const rowsB = b.map(rowTuple);
+  if (rowsA.some((row) => row.length !== rowsB[0].length)) return false;
+  const matched = new Set<number>();
+  for (const rowA of rowsA) {
+    const index = rowsB.findIndex((rowB, candidate) =>
+      !matched.has(candidate) && tuplesClose(rowA, rowB, tolerance),
+    );
+    if (index < 0) return false;
+    matched.add(index);
   }
   return true;
 }
 
-function valueBag(row: Record<string, unknown>): string[] {
-  return Object.values(row)
-    .map((v) => normValue(v))
-    .sort();
+function rowTuple(row: Record<string, unknown>): string[] {
+  return Object.values(row).map((value) => normValue(value));
 }
 
 function normValue(v: unknown): string {
@@ -66,7 +68,7 @@ function roundForCompare(n: number): string {
   return (Math.round(n * 100) / 100).toFixed(2);
 }
 
-function bagsClose(a: string[], b: string[], tolerance: number): boolean {
+function tuplesClose(a: string[], b: string[], tolerance: number): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     const na = Number(a[i]);

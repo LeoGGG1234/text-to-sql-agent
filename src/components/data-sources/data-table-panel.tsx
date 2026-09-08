@@ -12,7 +12,9 @@ import { useState, useEffect, useCallback } from 'react';
 import { DataTable } from './data-table';
 import { DataTablePagination } from './data-table-pagination';
 import { DeleteConfirmDialog } from './delete-confirm-dialog';
+import { CleaningPanel } from './cleaning-panel';
 import type { ColumnMeta } from './data-table';
+import type { ProfileStatus } from '@/lib/data-sources/types';
 
 interface Props {
   open: boolean;
@@ -41,6 +43,9 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
   // Schema
   const [currentTable, setCurrentTable] = useState<string>('');
   const [schemaLoading, setSchemaLoading] = useState(true);
+  const [profileStatus, setProfileStatus] = useState<ProfileStatus>('fresh');
+  const [profiling, setProfiling] = useState(false);
+  const [showCleaning, setShowCleaning] = useState(false);
 
   // Data
   const [data, setData] = useState<RowResponse | null>(null);
@@ -61,18 +66,36 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
   // Load schema on open.
   useEffect(() => {
     if (!open || !dataSourceId) return;
+    const controller = new AbortController();
+    setCurrentTable('');
+    setData(null);
+    setPage(1);
+    setSort(null);
+    setOrder('asc');
+    setSearch('');
+    setSearchInput('');
+    setSelectedRows(new Set());
+    setShowCleaning(false);
+    setError(null);
     setSchemaLoading(true);
-    fetch(`/api/data-sources/${dataSourceId}`)
+    fetch(`/api/data-sources/${dataSourceId}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((ds) => {
+        if (controller.signal.aborted) return;
         const schemaJson = ds.schemaJson;
         const tbls: TableInfo[] = schemaJson?.tables ?? [];
+        setProfileStatus(ds.profileStatus ?? 'fresh');
         if (tbls.length > 0) {
           setCurrentTable(tbls[0].name);
         }
       })
-      .catch(() => setError('Failed to load schema.'))
-      .finally(() => setSchemaLoading(false));
+      .catch((cause: unknown) => {
+        if ((cause as { name?: string }).name !== 'AbortError') setError('Failed to load schema.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSchemaLoading(false);
+      });
+    return () => controller.abort();
   }, [open, dataSourceId]);
 
   // Debounced search.
@@ -85,7 +108,7 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
   }, [searchInput]);
 
   // Fetch rows.
-  const fetchRows = useCallback(() => {
+  const fetchRows = useCallback((signal?: AbortSignal) => {
     if (!currentTable) return;
     setLoading(true);
     setError(null);
@@ -97,9 +120,10 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
     });
     if (sort) params.set('sort', sort);
     if (search) params.set('q', search);
-    fetch(`/api/data-sources/${dataSourceId}/rows?${params}`)
+    fetch(`/api/data-sources/${dataSourceId}/rows?${params}`, { signal })
       .then((r) => r.json())
       .then((d) => {
+        if (signal?.aborted) return;
         if (d.error) {
           setError(d.error);
         } else {
@@ -108,12 +132,18 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
           setSelectedRows(new Set());
         }
       })
-      .catch(() => setError('Failed to fetch rows.'))
-      .finally(() => setLoading(false));
+      .catch((cause: unknown) => {
+        if ((cause as { name?: string }).name !== 'AbortError') setError('Failed to fetch rows.');
+      })
+      .finally(() => {
+        if (!signal?.aborted) setLoading(false);
+      });
   }, [currentTable, page, pageSize, sort, order, search, dataSourceId]);
 
   useEffect(() => {
-    fetchRows();
+    const controller = new AbortController();
+    fetchRows(controller.signal);
+    return () => controller.abort();
   }, [fetchRows]);
 
   function handleSort(col: string) {
@@ -141,6 +171,7 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
     if (!res.ok) {
       throw new Error(body.error ?? 'Save failed');
     }
+    setProfileStatus('stale');
     // Update local row state so the display reflects the change.
     setData((prev) => {
       if (!prev) return prev;
@@ -164,6 +195,7 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
       setError(body.error ?? 'Failed to add row.');
       return;
     }
+    setProfileStatus('stale');
     // Refresh data to include the new row.
     fetchRows();
   }
@@ -185,7 +217,22 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
       setError(body.error ?? 'Failed to delete rows.');
       return;
     }
+    setProfileStatus('stale');
     setSelectedRows(new Set());
+    fetchRows();
+  }
+
+  async function handleProfile() {
+    setProfiling(true);
+    setError(null);
+    const res = await fetch(`/api/data-sources/${dataSourceId}/profile`, { method: 'POST' });
+    const body = await res.json();
+    setProfiling(false);
+    if (!res.ok) {
+      setError(body.error ?? 'Profiling failed.');
+      return;
+    }
+    setProfileStatus('fresh');
     fetchRows();
   }
 
@@ -218,6 +265,13 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
                 {data.total.toLocaleString()} rows
               </span>
             )}
+            <span className={`rounded px-1.5 py-0.5 text-[10px] ${
+              profileStatus === 'stale'
+                ? 'bg-amber-950/50 text-amber-300'
+                : 'bg-emerald-950/40 text-emerald-400'
+            }`}>
+              profile {profileStatus}
+            </span>
           </div>
           <button
             onClick={onClose}
@@ -239,6 +293,24 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
               className="w-full px-2.5 py-1 text-xs bg-zinc-900 border border-zinc-700 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 transition"
             />
           </div>
+
+          {/* Add row button */}
+          <button
+            onClick={() => setShowCleaning(true)}
+            disabled={schemaLoading}
+            className="px-3 py-1 text-[11px] font-medium text-purple-300 bg-purple-950/30 border border-purple-800/30 rounded-lg transition disabled:opacity-50"
+          >
+            Clean Data
+          </button>
+
+          {/* Add row button */}
+          <button
+            onClick={handleProfile}
+            disabled={profiling || schemaLoading}
+            className="px-3 py-1 text-[11px] font-medium text-amber-300 bg-amber-950/30 border border-amber-800/30 rounded-lg transition disabled:opacity-50"
+          >
+            {profiling ? 'Profiling...' : profileStatus === 'stale' ? 'Re-profile' : 'Refresh profile'}
+          </button>
 
           {/* Add row button */}
           <button
@@ -306,6 +378,16 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
           onConfirm={handleDeleteSelected}
           onCancel={() => setShowDeleteConfirm(false)}
           loading={deleting}
+        />
+      )}
+      {showCleaning && (
+        <CleaningPanel
+          dataSourceId={dataSourceId}
+          onClose={() => setShowCleaning(false)}
+          onApplied={() => {
+            setProfileStatus('fresh');
+            fetchRows();
+          }}
         />
       )}
     </div>

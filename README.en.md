@@ -1,4 +1,4 @@
-# Secure Multi-Tenant Text-to-SQL Agent
+# Self-Service AI Data Workspace
 
 [简体中文](README.md) · **English**
 
@@ -9,7 +9,7 @@
 
 > Ask business questions in natural language. The agent generates PostgreSQL, executes it through a read-only security boundary, self-corrects bounded failures, and visualizes the result.
 
-This is an end-to-end AI application for querying relational data in English or Chinese. Its main engineering focus is not merely producing plausible SQL: it treats model-generated SQL as untrusted code and enforces resource ownership, tenant-scoped table access, read-only execution, query limits, and measurable answer quality.
+This is an end-to-end AI data application for uploading, profiling, cleaning, and querying relational data in English or Chinese. Its engineering focus is not merely producing plausible SQL: it treats model-generated SQL as untrusted code, keeps destructive cleaning behind an explicit preview/commit boundary, and makes answer quality executable.
 
 **[Live Demo](https://text-to-sql-agent-staging.vercel.app)** · **[GitHub Actions](https://github.com/LeoGGG1234/text-to-sql-agent/actions/workflows/ci.yml)** · **[Engineering Case Study](docs/PORTFOLIO_CASE_STUDY.md)**
 
@@ -31,6 +31,7 @@ The UI exposes the SQL tool trace, result table, explanation, and chart. Guests,
 - **Defense-in-depth SQL execution** — ownership checks, a physical-table allowlist, AST validation, hardened read-only roles, a 1,000-row cap, and a 5-second timeout.
 - **Bounded self-correction** — structured error codes guide schema lookup and SQL rewriting without infinite retry loops.
 - **User-owned data** — CSV/XLSX upload, type inference, data-quality analysis, paginated preview, and conversation-level data-source binding.
+- **Deterministic cleaning policies** — inspectable recipes, conservative/standard/aggressive presets, full-table dry runs, before/after samples, explicit apply, revision-conflict protection, post-clean validation, and run history.
 - **Automatic visualization** — bar, line, and pie charts rendered from tool results with Recharts.
 - **Multi-provider routing** — DeepSeek, OpenAI, Anthropic, Gemini, and OpenRouter through the Vercel AI SDK.
 - **Execution-based evals** — generated and reference SQL are executed against the same database and their result sets are compared.
@@ -38,6 +39,12 @@ The UI exposes the SQL tool trace, result table, explanation, and chart. Guests,
 ## System flow
 
 ```text
+CSV / XLSX upload
+    ↓
+Schema inference → Quality profile → Data preview/edit
+    ↓
+Cleaning recipe → Dry-run diff → Explicit apply → Validation
+    ↓
 User question (English / Chinese)
     ↓
 Next.js chat UI (streaming responses + tool traces)
@@ -97,7 +104,7 @@ The built-in retail demo contains six related tables and roughly 25,000 determin
 
 `customers` · `categories` · `regions` · `products` · `orders` · `order_items`
 
-Users can also upload CSV or Excel files. The upload path:
+Users can also upload CSV or XLSX files. Legacy `.xls` is rejected with an explicit conversion message because its previous parser carried unresolved security advisories. The upload path:
 
 1. parses and normalizes column names;
 2. infers useful numeric/date cast hints while storing raw cells as text;
@@ -108,9 +115,26 @@ Users can also upload CSV or Excel files. The upload path:
 
 Default upload limits are 80 MB and 200,000 rows and can be configured through environment variables.
 
+## Data quality and cleaning
+
+Every uploaded source stores a quality profile together with a data revision. Inline edits, row insertion, and row deletion update the physical table and metadata atomically, increment the revision, and mark the profile stale. A re-profile uses optimistic revision checking, so it cannot publish statistics calculated over a concurrently changed table. Stale statistics are never injected into the Agent prompt.
+
+Cleaning follows an explicit, non-LLM execution boundary:
+
+```text
+Preset or structured recipe
+    → deterministic TypeScript executor
+    → full-table preview and representative diff
+    → user confirmation
+    → transactional apply
+    → before/after quality validation and history
+```
+
+The current recipe vocabulary covers whitespace/full-width normalization, configurable NULL markers, numeric/currency/percentage parsing, unambiguous year-first date normalization, missing-value handling, and exact or key-based deduplication. Preview/apply is capped at 50,000 rows per run to keep the current serverless implementation bounded. History is recorded; undo is not yet implemented.
+
 ## Eval-driven iteration
 
-The eval runner sends 20 bilingual questions through the real `/api/chat` route, extracts the SQL actually issued by `runSql`, executes generated and reference SQL against the same read-only retail database, and compares result sets.
+The eval runner sends 50 bilingual questions through the real `/api/chat` route, extracts the final SQL actually issued by `runSql`, validates it through the production SQL validator, executes generated and reference SQL against the same read-only retail database, and compares result sets. Row order and aliases may differ, but projected column position and values must match. Reports include provider/model, prompt version, commit SHA, dataset SHA-256, latency, tool steps, retry count, token usage when exposed by the stream, and a failure category.
 
 | Prompt | Validity | Exact execution accuracy | Schema adherence |
 |--------|----------|--------------------------|------------------|
@@ -122,7 +146,7 @@ Failure analysis found repeated result-shape errors: singular questions returnin
 - [v2 report](eval/report-deepseek-2026-08-15T11-35-33-177Z.md) / [raw JSON](eval/results-deepseek-2026-08-15T11-35-33-177Z.json)
 - [v4 report](eval/report-deepseek-v4-2026-08-15T11-40-50-855Z.md) / [raw JSON](eval/results-deepseek-v4-2026-08-15T11-40-50-855Z.json)
 
-> This is a small engineering regression snapshot, not a statistical-significance claim. The comparator is deliberately strict: a correct answer accompanied by extra contextual columns can still fail exact result-set matching.
+> The published 40%/60% numbers above remain the historical 20-case snapshot. The expanded 50-case suite requires a new controlled model run before a new score is claimed.
 
 Run an explicit prompt comparison with:
 
@@ -135,11 +159,12 @@ npm run eval -- --provider deepseek --prompt-variant v4
 
 | Gate | Current evidence |
 |------|------------------|
-| Unit and regression tests | 202 passing tests across 18 files; 61 focus on the SQL validator |
+| Unit and regression tests | 227 passing tests across 27 files; 61 focus on the SQL validator |
+| Browser E2E | 3 Playwright flows cover Guest entry, account-upgrade access, and profile → cleaning preview → explicit apply |
 | TypeScript | `tsc --noEmit` passes |
 | ESLint | Non-interactive `eslint . --max-warnings=0` passes |
 | Production build | Next.js production build passes |
-| Security integration | [2/2 passing in GitHub Actions](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31883750479) against a dedicated disposable Neon database |
+| Security integration | Last published run: [2/2 passing in GitHub Actions](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31883750479); the expanded 3-case suite will be authoritative after the next CI run |
 | Deployment readiness | Guest migration, role attributes, schema privileges, and SELECT-only table grants pass against staging |
 
 ## Run locally
@@ -157,7 +182,7 @@ Configure the required values documented in [`.env.example`](.env.example):
 - `DATABASE_URL` for authentication, conversations, and application metadata;
 - `RETAIL_DATABASE_URL` using the generated `retail_readonly` role;
 - `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`;
-- `USERDATA_DATABASE_URL` and `USERDATA_READONLY_PASSWORD` when uploads are enabled.
+- `USERDATA_DATABASE_URL` when uploads are enabled. `USERDATA_READONLY_PASSWORD` is deployment-only and is consumed by the explicit hardening command, not the web runtime.
 
 Initialize the application database and seed the retail demo with an admin-only connection:
 
@@ -174,6 +199,7 @@ npm test
 npm run typecheck
 npm run lint
 npm run build
+npm run test:e2e
 ```
 
 ## Deployment and database checks
@@ -216,8 +242,10 @@ npm run guest:cleanup -- --execute
 
 ## Current limitations
 
-- Exact execution accuracy is 60% in the current 20-case snapshot; time-series representation and multi-step semantics remain the largest eval gaps.
+- The 50-case eval suite has not yet received a controlled benchmark run; the documented 60% score belongs to the earlier 20-case snapshot.
 - The eval harness creates application conversations and does not yet provide deterministic cleanup for a dedicated eval identity.
+- Cleaning is bounded to 50,000 rows per run and keeps history but does not yet provide one-click undo.
+- Legacy `.xls` files must be saved as `.xlsx` or CSV before upload.
 - Rate limiting is process-local rather than distributed.
 - The repository currently has no explicit open-source license; all rights remain with the author unless a license is added.
 

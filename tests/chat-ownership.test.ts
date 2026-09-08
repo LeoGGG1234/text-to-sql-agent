@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -137,6 +137,8 @@ describe('POST /api/chat ownership boundaries', () => {
     });
   });
 
+  afterEach(() => vi.unstubAllEnvs());
+
   it('returns the same 404 for a missing or cross-owner conversation', async () => {
     mocks.getOwnedConversation.mockResolvedValue(null);
 
@@ -173,6 +175,21 @@ describe('POST /api/chat ownership boundaries', () => {
     expectNoModelOrPersistence();
   });
 
+  it('returns the generated conversation id in the streaming response headers', async () => {
+    const response = await POST(chatRequest({}));
+
+    expect(response.status).toBe(200);
+    const conversationId = response.headers.get('x-conversation-id');
+    expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(mocks.dbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: conversationId,
+        userId: USER_A,
+        dataSourceId: null,
+      }),
+    );
+  });
+
   it('rejects a historical cross-owner data source binding', async () => {
     mocks.getOwnedConversation.mockResolvedValue({
       id: CONVERSATION_A,
@@ -190,6 +207,26 @@ describe('POST /api/chat ownership boundaries', () => {
       DATA_SOURCE_B,
       USER_A,
     );
+    expectNoModelOrPersistence();
+  });
+
+  it('fails before persistence when userdata querying is not configured', async () => {
+    vi.stubEnv('USERDATA_DATABASE_URL', '');
+    mocks.getOwnedDataSource.mockResolvedValue({
+      id: DATA_SOURCE_A,
+      userId: USER_A,
+      name: 'Owned source',
+      type: 'upload',
+      config: {},
+      schemaJson: { tables: [], relationships: [] },
+    });
+
+    const response = await POST(chatRequest({ dataSourceId: DATA_SOURCE_A }));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: 'User-data querying is not configured.',
+    });
     expectNoModelOrPersistence();
   });
 
@@ -229,6 +266,7 @@ describe('POST /api/chat ownership boundaries', () => {
     );
 
     expect(response.status).toBe(200);
+    expect(response.headers.get('x-conversation-id')).toBe(CONVERSATION_A);
     expect(mocks.getOwnedConversation).toHaveBeenCalledWith(
       CONVERSATION_A,
       USER_A,

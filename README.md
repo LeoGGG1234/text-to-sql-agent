@@ -1,4 +1,4 @@
-# 数据问答 Agent · Text-to-SQL Data Q&A Agent
+# Self-Service AI Data Workspace · Text-to-SQL Agent
 
 **简体中文** · [English](README.en.md)
 
@@ -7,7 +7,7 @@
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-> 用自然语言查询企业数据库 —— Agent 自动生成 PostgreSQL、在**只读沙箱**中安全执行、自我纠错，并把结果可视化。
+> 上传、画像、清洗并用自然语言分析数据 —— Agent 在**只读安全边界**内生成和执行 PostgreSQL，并把结果解释和可视化。
 
 一个面向企业数据分析场景的 AI Agent：业务人员用中文/英文提问（"上季度营收最高的 5 个产品？"），Agent 生成 SQL、安全执行、画成图表，并给出自然语言结论。
 
@@ -37,12 +37,19 @@ Agent 会展示实际执行的 SQL、查询结果和图表；每个匿名访客�
 - 📊 **自动可视化**：Agent 根据数据自动选择柱状图 / 折线图 / 饼图（Recharts）
 - 🔀 **多模型路由**：DeepSeek / OpenAI / Anthropic / Gemini / OpenRouter 运行时切换
 - 📈 **Eval 评测体系**：以"执行准确率"（结果集比对）衡量 SQL 正确性，而非关键词匹配
+- 🧹 **确定性数据清洗**：结构化 Recipe、三档透明预设、Dry Run Diff、显式确认、并发 revision 防护、清洗后验证与历史记录
 
 ---
 
 ## 🏗️ 架构
 
 ```
+CSV / XLSX 上传
+    ↓
+Schema 推断 → 质量画像 → 预览 / 编辑
+    ↓
+Cleaning Recipe → Dry Run Diff → 显式 Apply → Validation
+    ↓
 用户提问（中/英）
     ↓
 Next.js Chat UI (streaming + 工具卡片)
@@ -69,7 +76,7 @@ LLM 生成的 SQL 默认不可信。本项目用**三层纵深防御**约束其�
 | **2. AST 校验** | `node-sql-parser` 解析成 AST：必须是单条 `SELECT`，且**逐操作校验 `tableList`**（防数据修改 CTE 绕过），拒绝多语句/注释/`SELECT INTO`/系统表/危险函数，并强制注入 `LIMIT 1000` | 注入、写操作（含 CTE 内写）、数据泄露、拖库 |
 | **3. 语句超时** | 角色级 `statement_timeout = 5s` + JS 侧超时兜底 | 笛卡尔积、慢查询拖垮数据库 |
 
-校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)。仓库当前共有 **202 个单元/回归测试**，其中 **61 个**聚焦 SQL validator（写操作/DDL/注入/多语句/数据修改 CTE 绕过/LIMIT 边界等）。另有 2 个连接一次性 Postgres 的安全集成测试，验证 Guest/ownership transfer 和物理表 allowlist。
+校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)。仓库当前共有 **227 个单元/回归测试**，其中 **61 个**聚焦 SQL validator（写操作/DDL/注入/多语句/数据修改 CTE 绕过/LIMIT 边界等）。另有 3 个连接一次性 Postgres 的安全集成测试，验证 Guest/ownership transfer、物理表 allowlist 与清洗事务。
 
 > **一个真实的对抗性发现**：最初的校验只判断 `stmt.type === 'select'`，但 PostgreSQL 的数据修改 CTE（`WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t`）顶层仍报告为 `select`，可绕过该检查。修复方式是逐一校验 `tableList` 中每个操作都是 `select`，并补上回归测试锁死。这也印证了第 1 层只读角色作为纵深防御的价值——校验层被绕过时数据库本身仍会拒绝写入。
 
@@ -95,6 +102,23 @@ LLM 生成的 SQL 默认不可信。本项目用**三层纵深防御**约束其�
 `customers` · `categories` · `regions` · `products` · `orders` · `order_items`
 
 由 [`scripts/seed-retail-db.ts`](scripts/seed-retail-db.ts) 用 faker 生成（确定性种子），并自动创建只读角色。
+
+## 🧹 数据质量与清洗
+
+上传数据源带有独立的 `dataRevision` 和画像状态。单元格编辑、增行和删行会在同一数据库事务中修改物理表与 metadata，同时把画像标记为 stale；重新画像通过 revision 乐观并发校验，避免把并发修改前算出的统计发布成最新结果。过期画像不会注入 Agent 提示词。
+
+清洗执行边界为：
+
+```text
+Preset / Structured Recipe
+    → 确定性 TypeScript Executor
+    → 全表 Preview Diff
+    → 用户显式确认
+    → 事务 Apply
+    → Before / After Validation + History
+```
+
+当前支持空白/全角字符规范化、可配置 NULL 标记、金额/千分位/百分比规范化、无歧义日期规范化、缺失值处理、精确或基于 Key 的去重。每次最多处理 50,000 行，以控制当前 Serverless 实现的时间和内存边界。已记录历史，但尚未实现一键 Undo。旧 `.xls` 因原解析依赖存在未修复安全公告而不再接受，请先另存为 `.xlsx` 或 CSV。
 
 ---
 
@@ -125,27 +149,29 @@ npm run dev          # → http://localhost:3000
 ```bash
 npm test             # 单元/回归测试（不连接外部数据库）
 npm run typecheck    # tsc --noEmit
-npm run eval         # 端到端：20 个 NL→SQL 用例，输出执行准确率报告
+npm run eval         # 端到端：50 个 NL→SQL 用例，输出可追溯执行准确率报告
+npm run test:e2e     # Playwright：Guest 与画像/清洗 UI 闭环
 ```
 
-Eval 用例覆盖 5 个类别（simple / aggregation / join / time_series / multi_step），中英双语。指标：**执行准确率**（生成 SQL 的结果集与参考答案比对）、**有效率**、**Schema 遵循度**。
+Eval 扩展为 50 个中英双语用例，覆盖 simple / aggregation / join / time series / multi-step / NULL / edge case。生成 SQL 先经过生产 SQL validator，再与 reference SQL 在同一只读数据库执行；比较允许行顺序和别名不同，但不再把列顺序打散成 value bag。报告记录 provider/model、prompt、commit SHA、dataset hash、延迟、tool steps、retry、可获得的 token usage 与 failure category。
 
 一次 20-case、同模型的 prompt A/B snapshot（2026-08-15）中，精确结果集执行准确率从默认 v2 的 **40%** 提升到 v4 的 **60%**，Validity 和 Schema adherence 都保持 **100%**。v4 因此成为当前默认 prompt；原始结果与失败用例均保留，便于复核，而不是只展示汇总数字：
 
 - [v2 报告](eval/report-deepseek-2026-08-15T11-35-33-177Z.md) / [原始 JSON](eval/results-deepseek-2026-08-15T11-35-33-177Z.json)
 - [v4 报告](eval/report-deepseek-v4-2026-08-15T11-40-50-855Z.md) / [原始 JSON](eval/results-deepseek-v4-2026-08-15T11-40-50-855Z.json)
 
-> 这是一次小样本工程回归，不是统计显著性结论。当前严格评分会把“正确答案 + 额外上下文字段”判为不完全匹配，因此 60% 不等同于人工语义正确率；项目刻意保留这一保守口径。
+> 40% / 60% 是历史 20-case snapshot。扩展后的 50-case suite 尚未重新跑受控模型评测，因此 README 不冒充已有新分数。
 
 ### 当前验证证据
 
 | 验证项 | 当前状态 | 说明 |
 |--------|----------|------|
-| Unit / regression tests | 202 passed | 不连接外部数据库 |
+| Unit / regression tests | 227 passed | 不连接外部数据库 |
+| Browser E2E | 3 passed | Guest 入口、匿名升级入口与画像 → 清洗预览 → 显式 Apply |
 | TypeScript | passed | `tsc --noEmit` |
 | ESLint | passed | `eslint . --max-warnings=0`，可在 CI 非交互运行 |
 | Production build | passed | Next.js production build |
-| Security integration | [2 passed（GitHub Actions）](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31883750479) | 使用独立 disposable Neon 数据库；验证 Guest/ownership transfer 与物理表 allowlist |
+| Security integration | 上次发布证据为 [2/2 passed（GitHub Actions）](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31883750479) | 扩展后的 3-case suite 加入真实清洗事务，将以下一次 CI 为准 |
 | Deployment readiness | passed（staging） | 检查 Guest migration、只读角色属性及 userdata schema/table 权限 |
 
 > `eval/` 中保留的 2026-06 报告是早期基线，不代表当前 hardened 版本。运行 `npm run eval` 会生成带时间戳的 JSON 与 Markdown 报告，避免用旧指标包装新实现。可用 `--prompt-variant v2` 或 `--prompt-variant v4` 做显式 A/B。
