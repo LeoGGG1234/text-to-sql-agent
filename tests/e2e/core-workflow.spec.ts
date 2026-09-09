@@ -63,7 +63,18 @@ test('stale profile can be refreshed and cleaning requires preview before apply'
     tableName: dataSource.schemaJson.tables[0].name, tableDisplayName: 'orders.xlsx',
   } }));
   await page.route('**/api/data-sources/ds-meta-1/profile', (route) => route.fulfill({ json: { profileStatus: 'fresh' } }));
-  await page.route('**/api/data-sources/ds-meta-1/cleaning-runs', (route) => route.fulfill({ json: { runs: applied ? [{ id: 'run-1', recipe: { name: 'Standard preset', steps: [] }, previewSummary: { affectedRows: 1 }, status: 'applied', createdAt: '2026-09-08T00:00:00.000Z', appliedAt: '2026-09-08T00:01:00.000Z' }] : [] } }));
+  await page.route('**/api/data-sources/ds-meta-1/cleaning-runs', (route) => route.fulfill({ json: { runs: applied ? [{
+    id: 'run-1',
+    recipe: { name: 'Standard preset', steps: [{ type: 'normalize_whitespace', columns: ['customer'] }] },
+    previewSummary: { inputRows: 2, outputRows: 2, affectedRows: 1, affectedCells: 1, removedRows: 0, generatedNulls: 0, parseFailures: 0, parseFailureSamples: [], samples: [] },
+    beforeValidation: dataSource.schemaJson.qualityProfile.table,
+    afterValidation: { ...dataSource.schemaJson.qualityProfile.table, columnsWithIssues: 0 },
+    status: 'applied',
+    baseRevision: 3,
+    resultRevision: 4,
+    createdAt: '2026-09-08T00:00:00.000Z',
+    appliedAt: '2026-09-08T00:01:00.000Z',
+  }] : [] } }));
   await page.route('**/api/data-sources/ds-meta-1/cleaning/preview', (route) => {
     const requestBody = route.request().postDataJSON() as { recipe?: { name: string; steps: unknown[] } };
     return route.fulfill({ json: {
@@ -112,4 +123,10 @@ test('stale profile can be refreshed and cleaning requires preview before apply'
   await expect(page.getByText('Post-clean validation')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Export applied CSV' })).toBeVisible();
   await expect(page.getByText('Standard preset')).toBeVisible();
+  await expect(page.getByText('Cleaning dashboard')).toBeVisible();
+  await expect(page.getByText('Applied runs', { exact: true })).toBeVisible();
+  await page.getByText('Standard preset').click();
+  await expect(page.getByText('Run impact')).toBeVisible();
+  await expect(page.getByText('3 → 4')).toBeVisible();
+  await expect(page.getByText('Validation', { exact: true })).toBeVisible();
 });

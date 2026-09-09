@@ -118,7 +118,7 @@ Preset / Structured Recipe
     → Before / After Validation + History
 ```
 
-当前支持空白/全角字符规范化、可配置 NULL 标记、金额/千分位/百分比规范化、无歧义日期规范化、缺失值处理、精确或基于 Key 的去重。每次最多处理 50,000 行，以控制当前 Serverless 实现的时间和内存边界。已记录历史，但尚未实现一键 Undo。旧 `.xls` 因原解析依赖存在未修复安全公告而不再接受，请先另存为 `.xlsx` 或 CSV。
+当前支持空白/全角字符规范化、可配置 NULL 标记、金额/千分位/百分比规范化、无歧义日期规范化、缺失值处理、精确或基于 Key 的去重。每次最多处理 50,000 行，以控制当前 Serverless 实现的时间和内存边界。Cleaning Dashboard 汇总最近 20 次运行，并可展开检查 recipe、影响范围、数据 revision 与清洗前后验证；尚未实现一键 Undo。旧 `.xls` 因原解析依赖存在未修复安全公告而不再接受，请先另存为 `.xlsx` 或 CSV。
 
 ---
 

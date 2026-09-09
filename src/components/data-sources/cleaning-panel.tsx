@@ -4,16 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { CleaningRecipe, CleaningSummary } from '@/lib/data-sources/cleaning-types';
 import type { QualityProfile } from '@/lib/data-sources/types';
 import type { ColumnMeta } from './data-table';
+import { CleaningHistory, CleaningRecipeSteps, type CleaningRun } from './cleaning-history';
 import { CleaningPolicyBuilder } from './cleaning-policy-builder';
-
-interface CleaningRun {
-  id: string;
-  recipe: CleaningRecipe;
-  previewSummary: CleaningSummary | null;
-  status: string;
-  createdAt: string;
-  appliedAt: string | null;
-}
 
 interface Preview {
   runId: string;
@@ -30,8 +22,6 @@ interface Props {
   onExport: () => void;
 }
 
-type CleaningStep = CleaningRecipe['steps'][number];
-
 const FAILURE_LABELS: Record<CleaningSummary['parseFailureSamples'][number]['reason'], string> = {
   invalid_numeric: 'Invalid numeric value',
   invalid_or_ambiguous_date: 'Invalid or ambiguous date',
@@ -42,24 +32,10 @@ function previewValue(value: string | null): string {
   return value == null ? 'NULL' : JSON.stringify(value);
 }
 
-function stepPolicy(step: CleaningStep): string | null {
-  if (step.type === 'normalize_numeric') {
-    const percentage = step.percentageMode === 'decimal' ? 'percent → decimal' : 'percent sign removed';
-    const failure = step.onError === 'set_null' ? 'failures → NULL' : 'failures kept';
-    return `${percentage}; ${failure}`;
-  }
-  if (step.type === 'normalize_boolean') {
-    const failure = step.onError === 'set_null' ? 'unknown values → NULL' : 'unknown values kept';
-    return `true/yes/y/1 → true; false/no/n/0 → false; ${failure}`;
-  }
-  if (step.type === 'normalize_date') return 'ambiguous or invalid dates kept';
-  if (step.type === 'drop_duplicates') return step.keys?.length ? 'selected keys' : 'exact full-row matches';
-  return null;
-}
-
 export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApplied, onExport }: Props) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [history, setHistory] = useState<CleaningRun[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,14 +46,24 @@ export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApp
 
   const loadHistory = useCallback(async (signal?: AbortSignal) => {
     const res = await fetch(`/api/data-sources/${dataSourceId}/cleaning-runs`, { signal });
-    if (res.ok) setHistory((await res.json()).runs ?? []);
+    if (!res.ok) return false;
+    setHistory((await res.json()).runs ?? []);
+    return true;
   }, [dataSourceId]);
 
   useEffect(() => {
     const controller = new AbortController();
-    loadHistory(controller.signal).catch((cause: unknown) => {
-      if ((cause as { name?: string }).name !== 'AbortError') setError('Could not load cleaning history.');
-    });
+    setHistoryLoading(true);
+    loadHistory(controller.signal)
+      .then((loaded) => {
+        if (!loaded) setError('Could not load cleaning history.');
+      })
+      .catch((cause: unknown) => {
+        if ((cause as { name?: string }).name !== 'AbortError') setError('Could not load cleaning history.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setHistoryLoading(false);
+      });
     return () => controller.abort();
   }, [loadHistory]);
 
@@ -181,15 +167,7 @@ export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApp
               <strong className="text-zinc-100">{preview.recipe.name}</strong>
               <span className="text-indigo-300">dry run</span>
             </div>
-            <ol className="list-decimal space-y-1 pl-4 text-zinc-400">
-              {preview.recipe.steps.map((step, index) => (
-                <li key={`${step.type}-${index}`}>
-                  <code>{step.type}</code>{' '}
-                  {'columns' in step ? step.columns.join(', ') : step.type === 'fill_missing' ? step.column : step.keys?.join(', ') ?? 'all columns'}
-                  {stepPolicy(step) ? <span className="block text-[10px] text-zinc-600">{stepPolicy(step)}</span> : null}
-                </li>
-              ))}
-            </ol>
+            <CleaningRecipeSteps recipe={preview.recipe} />
             <div className="grid grid-cols-2 gap-2 text-zinc-400">
               <span>Affected rows: <b className="text-zinc-100">{preview.summary.affectedRows}</b></span>
               <span>Affected cells: <b className="text-zinc-100">{preview.summary.affectedCells}</b></span>
@@ -262,24 +240,7 @@ export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApp
           </section>
         )}
 
-        <section>
-          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Recent runs</div>
-          {history.length === 0 ? <p className="text-zinc-600">No cleaning runs yet.</p> : (
-            <div className="space-y-2">
-              {history.map((run) => (
-                <div key={run.id} className="rounded border border-zinc-800 bg-zinc-900 p-2">
-                  <div className="flex justify-between text-zinc-300">
-                    <span>{run.recipe.name}</span><span>{run.status}</span>
-                  </div>
-                  <div className="mt-1 text-[10px] text-zinc-600">
-                    {new Date(run.appliedAt ?? run.createdAt).toLocaleString()}
-                    {run.previewSummary ? ` · ${run.previewSummary.affectedRows} affected rows` : ''}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        <CleaningHistory history={history} loading={historyLoading} />
       </div>
     </aside>
   );

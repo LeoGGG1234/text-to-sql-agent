@@ -13,7 +13,7 @@ This project therefore treats every generated query as untrusted input and optim
 ## 2. User flow
 
 1. A registered or isolated guest user starts a conversation.
-2. The user selects the built-in retail demo or an owned CSV/XLSX data source, inspects its quality profile, and can preview a deterministic cleaning recipe before applying it.
+2. The user selects the built-in retail demo or an owned CSV/XLSX data source, inspects its quality profile, previews a deterministic cleaning recipe before applying it, and can audit recent runs with recipe, impact, revision, and before/after validation details.
 3. The chat route revalidates conversation and data-source ownership.
 4. The model receives only the selected schema and calls `runSql`.
 5. The SQL is parsed, allowlisted, limited, and executed with a read-only role and timeout.

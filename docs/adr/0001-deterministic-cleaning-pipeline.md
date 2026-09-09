@@ -24,6 +24,7 @@ Presets are recipe generators, not hidden execution modes. Ambiguous dates are p
 - Destructive changes require preview and explicit confirmation.
 - Recipes and the executor can be unit-tested without a model or database.
 - Revision checks prevent applying a preview to changed data.
+- The recent-run dashboard reports only applied-run totals and keeps each stored recipe, impact summary, revision transition, and validation result inspectable.
 - Apply is atomic, but currently bounded to 50,000 rows and has history without one-click undo.
 - The deployment migration must precede the application build; `db:check` now verifies the required table and columns.
 

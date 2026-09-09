@@ -1,9 +1,10 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { NextResponse } from 'next/server';
 import { getDb } from '@/db';
 import * as schema from '@/db/schema';
 import { getSession } from '@/lib/auth-helpers';
 import { getOwnedDataSource } from '@/lib/data-sources/schema-manager';
+import type { TableProfile } from '@/lib/data-sources/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     id: schema.cleaningRuns.id,
     recipe: schema.cleaningRuns.recipe,
     previewSummary: schema.cleaningRuns.previewSummary,
+    beforeValidation: sql<TableProfile | null>`${schema.cleaningRuns.beforeProfile}->'table'`,
+    afterValidation: sql<TableProfile | null>`${schema.cleaningRuns.afterProfile}->'table'`,
     status: schema.cleaningRuns.status,
     baseRevision: schema.cleaningRuns.baseRevision,
     resultRevision: schema.cleaningRuns.resultRevision,
