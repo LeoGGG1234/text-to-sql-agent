@@ -44,6 +44,8 @@ function buildSharedRules(schemaText: string): string {
     '   - pie  → composition / share of a whole (sales by category).',
     '5. Write a short natural-language answer (2-4 sentences) stating the key numbers',
     '   and the insight. Reply in the SAME language the user asked in (中文 → 中文).',
+    '   Reserve the final model step for this answer. Once the SQL evidence is sufficient,',
+    '   stop calling tools and deliver the conclusion instead of running optional checks.',
     '',
     '## Rules',
     '- ONLY SELECT queries. Never attempt INSERT/UPDATE/DELETE/DROP — they are blocked and will fail.',

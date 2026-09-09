@@ -32,6 +32,10 @@ import type { ExecOptions } from '@/lib/sql-executor';
 import { getOwnedConversation } from '@/lib/conversation-manager';
 import { getOwnedDataSource } from '@/lib/data-sources/schema-manager';
 import { CHAT_CONVERSATION_ID_HEADER } from '@/lib/chat-protocol';
+import {
+  createTerminalNoticeTransform,
+  ensureTerminalText,
+} from '@/lib/agent-terminal-state';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60; // seconds (Hobby plan limit)
@@ -242,7 +246,8 @@ export async function POST(req: Request) {
       messages,
       system: systemPrompt,
       tools: buildTools({ execOptions, schemaTables: resolvedTables, schemaRelationships: resolvedRelationships }),
-      maxSteps: 5,
+      maxSteps: 6,
+      experimental_transform: createTerminalNoticeTransform(),
       onFinish: async (event) => {
         // Save assistant message
         try {
@@ -284,7 +289,7 @@ export async function POST(req: Request) {
             parts: [
               {
                 role: 'assistant',
-                content: event.text,
+                content: ensureTerminalText(event.text, event.finishReason),
                 toolInvocations:
                   toolInvocations.length > 0 ? toolInvocations : undefined,
               },
