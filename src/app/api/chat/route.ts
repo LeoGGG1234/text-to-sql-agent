@@ -35,6 +35,7 @@ import { CHAT_CONVERSATION_ID_HEADER } from '@/lib/chat-protocol';
 import {
   createTerminalNoticeTransform,
   ensureTerminalText,
+  finiteTokenUsage,
 } from '@/lib/agent-terminal-state';
 
 export const runtime = 'nodejs';
@@ -252,7 +253,7 @@ export async function POST(req: Request) {
         // Save assistant message
         try {
           const assistantMsgId = crypto.randomUUID();
-          const usage = event.usage;
+          const usage = finiteTokenUsage(event.usage);
 
           // Collect tool invocations from all steps
           const toolInvocations: Array<{
