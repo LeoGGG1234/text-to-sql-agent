@@ -63,7 +63,10 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-helpers';
 import { detectColumns, normalizeFullWidth } from '@/lib/data-sources/type-detector';
 import type { DiscoveredTable, SchemaJson, UploadConfig, QualityProfile } from '@/lib/data-sources/types';
-import { analyzeQuality } from '@/lib/data-sources/quality-analyzer';
+import {
+  analyzeQuality,
+  countStoredWhitespaceByColumn,
+} from '@/lib/data-sources/quality-analyzer';
 import { USERDATA_SCHEMA } from '@/lib/data-sources/userdata-security';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { parseCsvTable } from '@/lib/data-sources/csv-parser';
@@ -197,15 +200,7 @@ export async function POST(req: Request) {
   // Preserve parsed cell text exactly for storage and profiling. A normalized
   // copy is used only to infer semantic intent; user-visible transformations
   // belong to an explicit cleaning recipe and preview.
-  const whitespaceCounts: number[] = new Array(headers.length).fill(0);
-  for (let ci = 0; ci < headers.length; ci++) {
-    let count = 0;
-    for (let ri = 0; ri < rows.length; ri++) {
-      const raw = rows[ri][ci] ?? '';
-      if (raw !== raw.trim()) count++;
-    }
-    whitespaceCounts[ci] = count;
-  }
+  const whitespaceCounts = countStoredWhitespaceByColumn(rows, headers.length);
   const inferenceRows = rows.map((row) =>
     headers.map((_header, columnIndex) =>
       normalizeFullWidth(row[columnIndex] ?? '').trim(),

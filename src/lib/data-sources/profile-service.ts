@@ -1,4 +1,7 @@
-import { analyzeQuality } from './quality-analyzer';
+import {
+  analyzeQuality,
+  countStoredWhitespaceByColumn,
+} from './quality-analyzer';
 import type { DiscoveredTable, QualityProfile } from './types';
 
 /** Convert database rows into the analyzer's stable column-ordered matrix. */
@@ -23,6 +26,6 @@ export function profileTableRows(
     table.columns.map((column) => column.name),
     matrix,
     table.columns,
-    table.columns.map(() => 0),
+    countStoredWhitespaceByColumn(matrix, table.columns.length),
   );
 }

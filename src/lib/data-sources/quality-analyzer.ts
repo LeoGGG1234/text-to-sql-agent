@@ -39,6 +39,25 @@ const FUZZY_LENGTH_RATIO = 0.8;
 /** Max distinct values in the frequency map (caps memory for high-cardinality TEXT columns). */
 const MAX_FREQ_MAP_SIZE = 10_000;
 
+/** Count stored values with leading or trailing whitespace per column. */
+export function countStoredWhitespaceByColumn(
+  rows: Array<Array<string | null>>,
+  columnCount: number,
+): number[] {
+  const counts = new Array<number>(columnCount).fill(0);
+
+  for (const row of rows) {
+    for (let columnIndex = 0; columnIndex < columnCount; columnIndex++) {
+      const value = row[columnIndex];
+      if (value != null && value !== value.trim()) {
+        counts[columnIndex]++;
+      }
+    }
+  }
+
+  return counts;
+}
+
 // ─── Semantic type pattern matching (mirrors type-detector.ts) ───
 
 function classifySemanticValue(

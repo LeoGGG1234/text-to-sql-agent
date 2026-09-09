@@ -25,4 +25,14 @@ describe('profile service', () => {
     expect(result.columns.amount.nonMatchingCount).toBe(1);
     expect(result.table.duplicateRowCount).toBe(0);
   });
+
+  it('counts leading and trailing whitespace in the currently stored rows', () => {
+    const result = profileTableRows([
+      { name: '  A  ', amount: ' 10' },
+      { name: 'A  B', amount: '20 ' },
+    ], table);
+
+    expect(result.columns.name.trimmedCount).toBe(1);
+    expect(result.columns.amount.trimmedCount).toBe(2);
+  });
 });
