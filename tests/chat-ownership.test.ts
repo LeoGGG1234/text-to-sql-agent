@@ -291,7 +291,7 @@ describe('POST /api/chat ownership boundaries', () => {
     expect(mocks.streamText).toHaveBeenCalledOnce();
     expect(mocks.streamText).toHaveBeenCalledWith(
       expect.objectContaining({
-        maxSteps: 6,
+        maxSteps: 5,
         experimental_transform: expect.any(Function),
       }),
     );

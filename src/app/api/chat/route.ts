@@ -246,7 +246,7 @@ export async function POST(req: Request) {
       messages,
       system: systemPrompt,
       tools: buildTools({ execOptions, schemaTables: resolvedTables, schemaRelationships: resolvedRelationships }),
-      maxSteps: 6,
+      maxSteps: 5,
       experimental_transform: createTerminalNoticeTransform(),
       onFinish: async (event) => {
         // Save assistant message
