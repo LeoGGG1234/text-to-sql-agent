@@ -5,11 +5,11 @@ import type { DiscoveredTable, QualityProfile } from './types';
 export function rowsToProfileMatrix(
   rows: Array<Record<string, unknown>>,
   table: DiscoveredTable,
-): string[][] {
+): Array<Array<string | null>> {
   return rows.map((row) =>
     table.columns.map((column) => {
       const value = row[column.name];
-      return value == null ? '' : String(value);
+      return value == null ? null : String(value);
     }),
   );
 }

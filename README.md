@@ -36,7 +36,7 @@ Agent 会展示实际执行的 SQL、查询结果和图表；每个匿名访客�
 - 🔁 **自我纠错**：SQL 出错时，Agent 读取结构化错误码、查 schema、自动重写重试
 - 📊 **自动可视化**：Agent 根据数据自动选择柱状图 / 折线图 / 饼图（Recharts）
 - 🔀 **多模型路由**：DeepSeek / OpenAI / Anthropic / Gemini / OpenRouter 运行时切换
-- 📈 **Eval 评测体系**：以"执行准确率"（结果集比对）衡量 SQL 正确性，而非关键词匹配
+- 📈 **Eval 评测体系**：分别衡量 SQL 结果正确性、应用内工具成功、最终回答完整性与端到端任务成功，而非关键词匹配
 - 🧹 **确定性数据清洗**：结构化 Recipe、三档透明预设、Dry Run Diff、显式确认、并发 revision 防护、清洗后验证与历史记录
 
 ---
@@ -72,13 +72,13 @@ LLM 生成的 SQL 默认不可信。本项目用**三层纵深防御**约束其�
 
 | 层 | 机制 | 防住什么 |
 |----|------|----------|
-| **1. 数据库角色** | `retail_readonly` / `userdata_readonly` 角色只有目标表的 `SELECT` 授权，并撤销高权限与 schema 创建权限 | 即使应用校验失效，数据库仍拒绝未授权写操作 |
+| **1. 数据库角色** | `retail_readonly` / `userdata_readonly` 仅有业务表 `SELECT`，并撤销写入、高权限与 schema 创建权限；共享 `userdata_readonly` 不承担租户读隔离 | 即使应用校验失效，数据库仍拒绝写操作；跨租户读隔离由第 2 层物理表 allowlist 承担 |
 | **2. AST 校验** | `node-sql-parser` 解析成 AST：必须是单条 `SELECT`，且**逐操作校验 `tableList`**（防数据修改 CTE 绕过），拒绝多语句/注释/`SELECT INTO`/系统表/危险函数，并强制注入 `LIMIT 1000` | 注入、写操作（含 CTE 内写）、数据泄露、拖库 |
 | **3. 语句超时** | 角色级 `statement_timeout = 5s` + JS 侧超时兜底 | 笛卡尔积、慢查询拖垮数据库 |
 
-校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)。仓库当前共有 **227 个单元/回归测试**，其中 **61 个**聚焦 SQL validator（写操作/DDL/注入/多语句/数据修改 CTE 绕过/LIMIT 边界等）。另有 3 个连接一次性 Postgres 的安全集成测试，验证 Guest/ownership transfer、物理表 allowlist 与清洗事务。
+校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)。仓库当前共有 **294 个单元/回归测试**，其中 **75 个**聚焦 SQL validator（写操作/DDL/注入/多语句/数据修改 CTE、XML 映射函数绕过与 LIMIT 边界等）。另有 3 个连接一次性 Postgres 的安全集成测试，验证 Guest/ownership transfer、物理表 allowlist 与清洗事务。
 
-> **一个真实的对抗性发现**：最初的校验只判断 `stmt.type === 'select'`，但 PostgreSQL 的数据修改 CTE（`WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t`）顶层仍报告为 `select`，可绕过该检查。修复方式是逐一校验 `tableList` 中每个操作都是 `select`，并补上回归测试锁死。这也印证了第 1 层只读角色作为纵深防御的价值——校验层被绕过时数据库本身仍会拒绝写入。
+> **真实的对抗性发现**：最初的校验只判断 `stmt.type === 'select'`，但 PostgreSQL 的数据修改 CTE（`WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t`）顶层仍报告为 `select`，可绕过该检查；修复方式是逐一校验 `tableList` 中每个操作。后续审查又发现 `query_to_xml_and_xmlschema` 等 XML 映射函数可把查询藏入字符串参数，使 AST 看不到被访问表；当前已拒绝完整 XML 映射函数族并加入嵌套/限定名回归。数据库只读角色仍是写操作的最终防线，但共享角色不能替代租户物理表 allowlist。
 
 ## 🔁 自我纠错
 
@@ -118,7 +118,7 @@ Preset / Structured Recipe
     → Before / After Validation + History
 ```
 
-当前支持空白/全角字符规范化、可配置 NULL 标记、金额/千分位/百分比规范化、无歧义日期规范化、缺失值处理、精确或基于 Key 的去重。每次最多处理 50,000 行，以控制当前 Serverless 实现的时间和内存边界。Cleaning Dashboard 汇总最近 20 次运行，并可展开检查 recipe、影响范围、数据 revision 与清洗前后验证；尚未实现一键 Undo。旧 `.xls` 因原解析依赖存在未修复安全公告而不再接受，请先另存为 `.xlsx` 或 CSV。
+当前支持空白/全角字符规范化、可配置 NULL 标记、金额/千分位/百分比规范化、无歧义日期规范化、缺失值处理、精确或基于 Key 的去重。上传、清洗和导出统一限制为每个数据源 50,000 行，以控制当前 Serverless 实现的时间和内存边界。Cleaning Dashboard 汇总最近 20 次运行，并可展开检查 recipe、影响范围、数据 revision 与清洗前后验证；尚未实现一键 Undo。旧 `.xls` 因原解析依赖存在未修复安全公告而不再接受，请先另存为 `.xlsx` 或 CSV。
 
 ---
 
@@ -148,25 +148,32 @@ npm run dev          # → http://localhost:3000
 
 ```bash
 npm test             # 单元/回归测试（不连接外部数据库）
+npm run eval -- --validate-only # 仅验证 Eval CLI 与 50 题契约，不连接数据库/模型
 npm run typecheck    # tsc --noEmit
 npm run eval         # 端到端：50 个 NL→SQL 用例，输出可追溯执行准确率报告
+npm run eval -- --rescore eval/results-....json # 不调用模型；按当前契约重放已保存 SQL
 npm run test:e2e     # Playwright：Guest 与画像/清洗 UI 闭环
 ```
 
-Eval 扩展为 50 个中英双语用例，覆盖 simple / aggregation / join / time series / multi-step / NULL / edge case。生成 SQL 先经过生产 SQL validator，再与 reference SQL 在同一只读数据库执行；比较允许行顺序和别名不同，但不再把列顺序打散成 value bag。报告记录 provider/model、prompt、commit SHA、dataset hash、延迟、tool steps、retry、可获得的 token usage 与 failure category。
+Eval 扩展为 50 个中英双语用例，覆盖 simple / aggregation / join / time series / multi-step / NULL / edge case。生成 SQL 先经过生产 SQL validator，再与 reference SQL 在同一只读数据库执行。比较器默认要求数值精确相等、保留列位置；只有逐题契约明确声明时，才允许绝对数值容差、额外解释列、文本组合或月/季度等价表示。无法唯一确定业务口径的题目保留为 diagnostic case，但不进入主分数。报告分别记录 SQL 重放结果、应用内 `runSql` 结果、正常流结束后的最终解释及端到端任务成功，并保留 provider/model、prompt、commit SHA、源码快照 hash、dataset hash、延迟、tool steps、真实失败后重试数、token usage 与 failure category。
 
-一次 20-case、同模型的 prompt A/B snapshot（2026-08-15）中，精确结果集执行准确率从默认 v2 的 **40%** 提升到 v4 的 **60%**，Validity 和 Schema adherence 都保持 **100%**。v4 因此成为当前默认 prompt；原始结果与失败用例均保留，便于复核，而不是只展示汇总数字：
+2026-09-09 的一次 DeepSeek `deepseek-v4-flash`、prompt v4、50-case 真实运行，在修订评测契约前得到 **74.0% raw strict result match / 74.0% task success**，SQL validity、replay execution、应用工具成功和最终回答完整性均为 **100%**。13 个 raw mismatch 的后续审查识别出 9 个表示层差异、1 个 reference SQL 的实体粒度错误、2 个指标歧义和 1 个明确模型错误。基于该审查形成的 v2 契约离线重评分为 **47/48（97.9%）**，另有 2 个 diagnostic case；因为契约是在查看本次输出后形成，该数字明确标记为 post-run adjudication，不能冒充预先冻结的独立基线：
+
+- [50-case raw 报告](eval/report-deepseek-v4-2026-09-09T08-00-40-981Z.md) / [原始 JSON](eval/results-deepseek-v4-2026-09-09T08-00-40-981Z.json)
+- [v2 post-run 重评分报告](eval/report-deepseek-v4-rescore-2026-09-09T08-20-43-025Z.md) / [重评分 JSON](eval/results-deepseek-v4-rescore-2026-09-09T08-20-43-025Z.json)
+
+一次 20-case、同模型的 prompt A/B snapshot（2026-08-15）中，旧版比较器记录的结果集执行准确率从默认 v2 的 **40%** 提升到 v4 的 **60%**，Validity 和当时的 Schema-adherence proxy 都为 **100%**。旧版比较器使用约 1% 的全局相对数值容差，因此这组结果只作为 prompt 迭代的历史方向性证据；原始结果与失败用例均保留：
 
 - [v2 报告](eval/report-deepseek-2026-08-15T11-35-33-177Z.md) / [原始 JSON](eval/results-deepseek-2026-08-15T11-35-33-177Z.json)
 - [v4 报告](eval/report-deepseek-v4-2026-08-15T11-40-50-855Z.md) / [原始 JSON](eval/results-deepseek-v4-2026-08-15T11-40-50-855Z.json)
 
-> 40% / 60% 是历史 20-case snapshot。扩展后的 50-case suite 尚未重新跑受控模型评测，因此 README 不冒充已有新分数。
+> 40% / 60% 是历史 20-case、旧比较器口径的 snapshot；74% 是 50-case 原始严格结构分数；97.9% 是看过失败后形成契约的离线重评分。下一次冻结契约后的独立运行，才适合作为新的 prospective baseline。
 
 ### 当前验证证据
 
 | 验证项 | 当前状态 | 说明 |
 |--------|----------|------|
-| Unit / regression tests | 227 passed | 不连接外部数据库 |
+| Unit / regression tests | 294 passed | 不连接外部数据库 |
 | Browser E2E | 3 passed | Guest 入口、匿名升级入口与画像 → 清洗预览 → 显式 Apply |
 | TypeScript | passed | `tsc --noEmit` |
 | ESLint | passed | `eslint . --max-warnings=0`，可在 CI 非交互运行 |

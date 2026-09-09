@@ -65,6 +65,25 @@ export function SchemaPreview({ tables, qualityProfile, profileStatus, profiledA
             {t.columns?.map((c, ci) => {
               const cp: ColumnProfile | undefined =
                 qualityProfile?.columns?.[c.name];
+              const currentProfile =
+                cp?.databaseNullCount !== undefined ||
+                cp?.nullMarkerCount !== undefined;
+              const databaseNullCount = cp
+                ? currentProfile
+                  ? cp.databaseNullCount ?? 0
+                  : cp.nullConvertedCount ?? 0
+                : 0;
+              const nullMarkerCount = cp?.nullMarkerCount ?? 0;
+              const nullMarkerSamples = cp?.nullMarkerSamples ?? {};
+              const invalidCount = cp?.invalidCount ?? cp?.nonMatchingCount ?? 0;
+              const ambiguousCount = cp?.ambiguousCount ?? 0;
+              const isClean =
+                cp != null &&
+                databaseNullCount === 0 &&
+                nullMarkerCount === 0 &&
+                cp.nonMatchingCount === 0 &&
+                cp.trimmedCount === 0 &&
+                cp.fuzzyDuplicateClusters === 0;
               return (
                 <div key={ci} className="flex items-center gap-2 py-1 text-xs flex-wrap">
                   <span className="text-zinc-200 font-mono">{c.name}</span>
@@ -83,24 +102,40 @@ export function SchemaPreview({ tables, qualityProfile, profileStatus, profiledA
                     <span className="text-[10px] text-zinc-600">nullable</span>
                   )}
                   {/* Quality badges */}
-                  {cp && cp.nullConvertedCount > 0 && (
+                  {cp && databaseNullCount > 0 && (
                     <span
                       className="text-[10px] px-1 py-0.1 rounded bg-amber-900/40 text-amber-400"
-                      title={`${cp.nullConvertedCount} values → NULL (${Object.entries(cp.nullConvertedSamples)
-                        .sort((a, b) => b[1] - a[1])
-                        .slice(0, 3)
-                        .map(([k, v]) => `${k}×${v}`)
-                        .join(', ')})`}
+                      title={`${databaseNullCount} database NULL values`}
                     >
-                      {cp.nullConvertedCount} NULL
+                      {databaseNullCount} DB NULL
                     </span>
                   )}
-                  {cp && cp.nonMatchingRatio > 0.05 && (
+                  {cp && nullMarkerCount > 0 && (
+                    <span
+                      className="text-[10px] px-1 py-0.1 rounded bg-amber-900/40 text-amber-300"
+                      title={`${nullMarkerCount} NULL-like text markers (${Object.entries(nullMarkerSamples)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([key, count]) => `${key}×${count}`)
+                        .join(', ')}) remain stored as text`}
+                    >
+                      {nullMarkerCount} markers
+                    </span>
+                  )}
+                  {cp && cp.nonMatchingCount > 0 && (
                     <span
                       className="text-[10px] px-1 py-0.1 rounded bg-red-900/40 text-red-400"
-                      title={`${Math.round(cp.nonMatchingRatio * 100)}% non-${c.semanticType} values (e.g. ${cp.nonMatchingSamples.join(', ')})`}
+                      title={`${invalidCount} invalid and ${ambiguousCount} ambiguous ${c.semanticType} values (e.g. ${cp.nonMatchingSamples.join(', ')})`}
                     >
-                      {Math.round(cp.nonMatchingRatio * 100)}% dirty
+                      {cp.nonMatchingCount} invalid/ambiguous
+                    </span>
+                  )}
+                  {cp && cp.trimmedCount > 0 && (
+                    <span
+                      className="text-[10px] px-1 py-0.1 rounded bg-orange-900/40 text-orange-300"
+                      title={`${cp.trimmedCount} values contain leading or trailing whitespace`}
+                    >
+                      {cp.trimmedCount} whitespace
                     </span>
                   )}
                   {cp && cp.fuzzyDuplicateClusters > 0 && (
@@ -111,10 +146,7 @@ export function SchemaPreview({ tables, qualityProfile, profileStatus, profiledA
                       {cp.fuzzyDuplicateClusters} fuzzy
                     </span>
                   )}
-                  {cp &&
-                    cp.nullConvertedCount === 0 &&
-                    cp.nonMatchingRatio <= 0.05 &&
-                    cp.fuzzyDuplicateClusters === 0 && (
+                  {isClean && (
                       <span className="text-[10px] px-1 py-0.1 rounded bg-emerald-900/40 text-emerald-400">
                         clean
                       </span>

@@ -13,8 +13,8 @@ const table: DiscoveredTable = {
 };
 
 describe('profile service', () => {
-  it('keeps schema column order and represents SQL NULL as missing input', () => {
-    expect(rowsToProfileMatrix([{ amount: null, name: 'A' }], table)).toEqual([['A', '']]);
+  it('keeps schema column order and preserves SQL NULL separately from empty text', () => {
+    expect(rowsToProfileMatrix([{ amount: null, name: 'A' }], table)).toEqual([['A', null]]);
   });
 
   it('profiles current rows rather than the upload snapshot', () => {

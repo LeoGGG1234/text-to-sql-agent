@@ -22,50 +22,73 @@ function makeCol(name: string, st: DiscoveredColumn['semanticType']): Discovered
   };
 }
 
+describe('detectColumns — semantic inference inputs', () => {
+  it('excludes NULL-like markers from type confidence', () => {
+    const [column] = detectColumns(
+      ['amount'],
+      [['100'], ['200'], ['N/A'], ['无'], ['NULL']],
+    );
+
+    expect(column).toMatchObject({ semanticType: 'NUMERIC', nullable: true });
+  });
+});
+
 describe('analyzeQuality — Q1 NULL-like detection', () => {
   it('detects empty strings as NULL-like', () => {
     const rows = [[''], [''], ['']];
     const cols = [makeCol('col1', 'TEXT')];
     const result = analyzeQuality(['col1'], rows, cols, [0]);
-    expect(result.columns.col1.nullConvertedCount).toBe(3);
-    expect(result.columns.col1.nullConvertedSamples['(empty)']).toBe(3);
+    expect(result.columns.col1.nullMarkerCount).toBe(3);
+    expect(result.columns.col1.nullMarkerSamples?.['(empty)']).toBe(3);
   });
 
   it('detects "N/A" and "n/a" as NULL-like', () => {
     const rows = [['N/A'], ['n/a'], ['valid']];
     const cols = [makeCol('col1', 'TEXT')];
     const result = analyzeQuality(['col1'], rows, cols, [0]);
-    expect(result.columns.col1.nullConvertedCount).toBe(2);
-    expect(result.columns.col1.nullConvertedSamples['N/A']).toBe(1);
-    expect(result.columns.col1.nullConvertedSamples['n/a']).toBe(1);
+    expect(result.columns.col1.nullMarkerCount).toBe(2);
+    expect(result.columns.col1.nullMarkerSamples?.['N/A']).toBe(1);
+    expect(result.columns.col1.nullMarkerSamples?.['n/a']).toBe(1);
   });
 
   it('detects Chinese NULL indicators', () => {
     const rows = [['无'], ['暂无'], ['data']];
     const cols = [makeCol('col1', 'TEXT')];
     const result = analyzeQuality(['col1'], rows, cols, [0]);
-    expect(result.columns.col1.nullConvertedCount).toBe(2);
+    expect(result.columns.col1.nullMarkerCount).toBe(2);
   });
 
   it('detects "null"/"NULL"/"Null" variants', () => {
     const rows = [['null'], ['NULL'], ['Null'], ['real']];
     const cols = [makeCol('col1', 'TEXT')];
     const result = analyzeQuality(['col1'], rows, cols, [0]);
-    expect(result.columns.col1.nullConvertedCount).toBe(3);
+    expect(result.columns.col1.nullMarkerCount).toBe(3);
   });
 
   it('detects nil/None', () => {
-    const rows = [['nil'], ['None']];
+    const rows = [['nil'], ['NONE']];
     const cols = [makeCol('col1', 'TEXT')];
     const result = analyzeQuality(['col1'], rows, cols, [0]);
-    expect(result.columns.col1.nullConvertedCount).toBe(2);
+    expect(result.columns.col1.nullMarkerCount).toBe(2);
   });
 
-  it('returns 0 nullConvertedCount for clean data', () => {
+  it('returns 0 nullMarkerCount for clean data', () => {
     const rows = [['hello'], ['world']];
     const cols = [makeCol('col1', 'TEXT')];
     const result = analyzeQuality(['col1'], rows, cols, [0]);
-    expect(result.columns.col1.nullConvertedCount).toBe(0);
+    expect(result.columns.col1.nullMarkerCount).toBe(0);
+  });
+
+  it('distinguishes database NULL from an empty text marker', () => {
+    const result = analyzeQuality(
+      ['col1'],
+      [[null], ['']],
+      [makeCol('col1', 'TEXT')],
+      [0],
+    );
+
+    expect(result.columns.col1.databaseNullCount).toBe(1);
+    expect(result.columns.col1.nullMarkerCount).toBe(1);
   });
 });
 
@@ -104,6 +127,22 @@ describe('analyzeQuality — Q2 non-matching type values', () => {
     const result = analyzeQuality(['date_col'], rows, cols, [0]);
     // '2026-01-15' matches, 'not a date' doesn't, '2026/05/20' matches pattern 4.
     expect(result.columns.date_col.nonMatchingCount).toBe(1);
+  });
+
+  it('separates invalid calendar dates from ambiguous date values', () => {
+    const result = analyzeQuality(
+      ['date_col'],
+      [['2026-02-31'], ['09/08/2026'], ['2026-09-08']],
+      [makeCol('date_col', 'DATE')],
+      [0],
+    );
+
+    expect(result.columns.date_col).toMatchObject({
+      nonMatchingCount: 2,
+      invalidCount: 1,
+      ambiguousCount: 1,
+    });
+    expect(result.table.columnsWithIssues).toBe(1);
   });
 
   it('flags non-boolean values in BOOLEAN column', () => {
@@ -199,7 +238,7 @@ describe('analyzeQuality — table-level stats', () => {
       ['200', 'ok'],
     ];
     const cols = [
-      makeCol('amount', 'NUMERIC'), // has nullConverted
+      makeCol('amount', 'NUMERIC'), // has a NULL-like text marker
       makeCol('name', 'TEXT'),      // clean
     ];
     const result = analyzeQuality(['amount', 'name'], rows, cols, [0, 0]);
@@ -219,15 +258,15 @@ describe('analyzeQuality — table-level stats', () => {
     expect(result.table.columnsWithIssues).toBe(1);
   });
 
-  it('does not count nonMatching as issue when <= 5%', () => {
+  it('still counts a low-frequency invalid value as an observed issue', () => {
     const rows = Array.from({ length: 100 }, () => ['100']);
     rows.push(['bad']); // 1 out of 101 non-null → ~1%
     const cols = [makeCol('amount', 'NUMERIC')];
     const result = analyzeQuality(['amount'], rows, cols, [0]);
-    // non-matching is ~1% < 5%, but nullConverted may have 'bad'? No, 'bad' isn't null-like.
-    // So nonMatchingCount=1, nonMatchingRatio ~= 0.01 → < 5% → no issue flagged.
-    // columnsWithIssues should NOT count this if nullConverted=0 AND nonMatchingRatio <= 0.05.
-    expect(result.table.columnsWithIssues).toBe(0);
+    // The ratio remains useful for severity, but one invalid value means the
+    // column must not be labelled clean.
+    expect(result.columns.amount.nonMatchingRatio).toBeLessThan(0.05);
+    expect(result.table.columnsWithIssues).toBe(1);
   });
 });
 
@@ -250,8 +289,8 @@ describe('analyzeQuality — real-world integration', () => {
 
     // Q1: amount → "N/A" + empty(?) — wait, "  N/A  " after trim is "N/A" → null-like.
     //     note → "N/A", "", "nil" → 3 null-like.
-    expect(result.columns.amount.nullConvertedCount).toBe(1); // "N/A"
-    expect(result.columns.note.nullConvertedCount).toBe(3); // "N/A", "", "nil"
+    expect(result.columns.amount.nullMarkerCount).toBe(1); // "N/A"
+    expect(result.columns.note.nullMarkerCount).toBe(3); // "N/A", "", "nil"
 
     // Q2: amount is NUMERIC (100, 200, N/A→null, 350, 42 → 4 numeric, 1 null-like = 4/4 non-null are numeric → 100%).
     //     But wait: "bad-date" in date column after trim... detectColumns would infer DATE type
@@ -298,7 +337,7 @@ describe('buildQualityNote — semantics, no regex', () => {
     expect(note).not.toContain('^[0-9]');
   });
 
-  it('generates NULL conversion note with descriptive language', () => {
+  it('generates a legacy NULL conversion note with descriptive language', () => {
     const col = makeCol('amount', 'NUMERIC');
     const profile: ColumnProfile = {
       nullConvertedCount: 5,
@@ -341,7 +380,7 @@ describe('buildQualityNote — semantics, no regex', () => {
     expect(note).toBe('');
   });
 
-  it('does not warn when nonMatchingRatio <= 0.05', () => {
+  it('warns even when invalid values are below the old 5% threshold', () => {
     const col = makeCol('amount', 'NUMERIC');
     const profile: ColumnProfile = {
       nullConvertedCount: 0,
@@ -357,7 +396,33 @@ describe('buildQualityNote — semantics, no regex', () => {
       fuzzyDuplicateSamples: [],
     };
     const note = buildQualityNote(col, profile);
-    expect(note).toBe(''); // <= 5% → no warning.
+    expect(note).toContain('2 values (4%)');
+    expect(note).toContain('invalid or ambiguous NUMERIC');
+  });
+
+  it('distinguishes current text markers from database NULL in the Agent note', () => {
+    const col = makeCol('amount', 'NUMERIC');
+    const profile: ColumnProfile = {
+      databaseNullCount: 1,
+      nullMarkerCount: 2,
+      nullMarkerSamples: { 'N/A': 2 },
+      invalidCount: 0,
+      ambiguousCount: 0,
+      nonMatchingCount: 0,
+      nonMatchingRatio: 0,
+      nonMatchingSamples: [],
+      uniqueCount: 2,
+      trimmedCount: 0,
+      minLength: 1,
+      maxLength: 3,
+      fuzzyDuplicateClusters: 0,
+      fuzzyDuplicateSamples: [],
+    };
+
+    const note = buildQualityNote(col, profile);
+    expect(note).toContain('1 rows contain database NULL');
+    expect(note).toContain('2 rows contain NULL-like text markers');
+    expect(note).toContain('still stored as text');
   });
 
   it('returns empty string when profile is undefined', () => {
@@ -558,14 +623,12 @@ describe('rowKey — memory-efficient duplicate detection', () => {
 
   it('handles special characters including commas and quotes', () => {
     const k = rowKey(['hello, world', "it's fine", '"quoted"']);
-    expect(k).toBe('hello, world\x00it\'s fine\x00"quoted"');
+    expect(k).toBe('12:hello, world|9:it\'s fine|8:"quoted"');
   });
 
-  it('produces a key shorter than JSON.stringify for typical data', () => {
-    const row = ['Alice', '5000', '2024-01-15', 'Engineering'];
-    const nullKey = rowKey(row);
-    const jsonKey = JSON.stringify(row);
-    expect(nullKey.length).toBeLessThan(jsonKey.length);
+  it('distinguishes database NULL, empty text, and delimiter-like values', () => {
+    expect(rowKey([null])).not.toBe(rowKey(['']));
+    expect(rowKey(['a|1:b'])).not.toBe(rowKey(['a', 'b']));
   });
 
   it('duplicate detection uses rowKey correctly', () => {
@@ -634,6 +697,6 @@ describe('benchmark — large dataset', () => {
     // duplicates beyond random collisions. Column-level stats should work.
     expect(result.table.duplicateRowCount).toBeGreaterThanOrEqual(0);
     // note column (index 4) has N/A every 50 rows → 2000 null-like values.
-    expect(result.columns.note.nullConvertedCount).toBe(2_000);
+    expect(result.columns.note.nullMarkerCount).toBe(2_000);
   });
 });

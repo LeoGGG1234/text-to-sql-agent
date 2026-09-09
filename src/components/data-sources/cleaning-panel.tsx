@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { CleaningRecipe, CleaningSummary } from '@/lib/data-sources/cleaning-types';
 import type { QualityProfile } from '@/lib/data-sources/types';
 import type { ColumnMeta } from './data-table';
-import { CleaningHistory, CleaningRecipeSteps, type CleaningRun } from './cleaning-history';
+import { CleaningHistory, CleaningRecipeSteps, RemovedRowEvidence, type CleaningRun } from './cleaning-history';
 import { CleaningPolicyBuilder } from './cleaning-policy-builder';
 
 interface Preview {
@@ -20,6 +20,7 @@ interface Props {
   onClose: () => void;
   onApplied: () => void;
   onExport: () => void;
+  onAnalyze: () => void;
 }
 
 const FAILURE_LABELS: Record<CleaningSummary['parseFailureSamples'][number]['reason'], string> = {
@@ -32,7 +33,7 @@ function previewValue(value: string | null): string {
   return value == null ? 'NULL' : JSON.stringify(value);
 }
 
-export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApplied, onExport }: Props) {
+export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApplied, onExport, onAnalyze }: Props) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [history, setHistory] = useState<CleaningRun[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -188,6 +189,7 @@ export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApp
                 ))}
               </div>
             )}
+            <RemovedRowEvidence summary={preview.summary} />
             {preview.summary.parseFailures > 0 && (
               <div className="rounded border border-amber-800/50 bg-amber-950/20 p-2">
                 <div className="mb-1 font-medium text-amber-300">Unresolved parse failures</div>
@@ -236,6 +238,13 @@ export function CleaningPanel({ dataSourceId, columns, exporting, onClose, onApp
               className="mt-3 w-full rounded border border-emerald-800/50 bg-emerald-950/30 px-3 py-2 font-medium text-emerald-300 hover:bg-emerald-900/30 disabled:opacity-50"
             >
               {exporting ? 'Exporting...' : 'Export applied CSV'}
+            </button>
+            <button
+              type="button"
+              onClick={onAnalyze}
+              className="mt-2 w-full rounded bg-indigo-600 px-3 py-2 font-medium text-white hover:bg-indigo-500"
+            >
+              Analyze cleaned data
             </button>
           </section>
         )}

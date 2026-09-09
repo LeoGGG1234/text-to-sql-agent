@@ -230,6 +230,7 @@ describe('isNullLike', () => {
   it('returns true for "nil" and "None"', () => {
     expect(isNullLike('nil')).toBe(true);
     expect(isNullLike('None')).toBe(true);
+    expect(isNullLike(' NONE ')).toBe(true);
   });
 
   it('returns true for dash characters', () => {

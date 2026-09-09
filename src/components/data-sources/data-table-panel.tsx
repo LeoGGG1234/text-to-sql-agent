@@ -20,6 +20,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   dataSourceId: string;
+  onAnalyze: (dataSourceId: string, name: string) => void;
 }
 
 interface TableInfo {
@@ -39,7 +40,7 @@ interface RowResponse {
   tableDisplayName: string;
 }
 
-export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
+export function DataTablePanel({ open, onClose, dataSourceId, onAnalyze }: Props) {
   // Schema
   const [currentTable, setCurrentTable] = useState<string>('');
   const [schemaLoading, setSchemaLoading] = useState(true);
@@ -328,7 +329,14 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
             />
           </div>
 
-          {/* Add row button */}
+          <button
+            onClick={() => onAnalyze(dataSourceId, data?.tableDisplayName ?? 'Uploaded data')}
+            disabled={schemaLoading || !data}
+            className="px-3 py-1 text-[11px] font-medium text-sky-300 bg-sky-950/30 border border-sky-800/30 rounded-lg transition disabled:opacity-50"
+          >
+            Analyze this data
+          </button>
+
           <button
             onClick={() => setShowCleaning(true)}
             disabled={schemaLoading || !data?.columns.length}
@@ -429,6 +437,7 @@ export function DataTablePanel({ open, onClose, dataSourceId }: Props) {
           exporting={exporting}
           onClose={() => setShowCleaning(false)}
           onExport={() => void handleExport()}
+          onAnalyze={() => onAnalyze(dataSourceId, data?.tableDisplayName ?? 'Uploaded data')}
           onApplied={() => {
             setProfileStatus('fresh');
             fetchRows();

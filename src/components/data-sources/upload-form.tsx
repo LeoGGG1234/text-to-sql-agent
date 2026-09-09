@@ -122,7 +122,7 @@ export function UploadForm({ onSuccess, onCancel }: Props) {
           <p className="text-xs text-zinc-500">
             Drop a file here or click to browse.<br />
             <span className="text-zinc-600">
-              .csv, .xlsx · {limits ? `max ${limits.maxFileMb} MB · ${limits.maxRows.toLocaleString()} rows` : 'limits checked by server'}
+              .csv, .xlsx · {limits ? `max ${limits.maxFileMb} MB · ${limits.maxRows.toLocaleString()} rows for upload, cleaning, and export` : 'limits checked by server'}
             </span>
           </p>
         )}

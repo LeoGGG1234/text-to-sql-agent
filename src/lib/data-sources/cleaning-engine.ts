@@ -5,6 +5,7 @@ import type {
   CleaningSummary,
 } from './cleaning-types';
 import type { DiscoveredTable } from './types';
+import { matchesTextMarker, parseDateValue } from './value-parsers';
 
 const SAMPLE_LIMIT = 20;
 
@@ -12,20 +13,9 @@ function asText(value: string | number | null | undefined): string | null {
   return value == null ? null : String(value);
 }
 
-function validDate(year: number, month: number, day: number): boolean {
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
-}
-
 function normalizeDate(value: string): string | null {
-  const match = value.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-  if (!match) return null;
-  const [, y, m, d] = match;
-  const year = Number(y);
-  const month = Number(m);
-  const day = Number(d);
-  if (!validDate(year, month, day)) return null;
-  return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  const result = parseDateValue(value);
+  return result.status === 'valid' ? result.normalized : null;
 }
 
 function normalizeNumber(
@@ -37,13 +27,58 @@ function normalizeNumber(
   if (negative) text = text.slice(1, -1).trim();
   const percentage = text.endsWith('%');
   if (percentage) text = text.slice(0, -1).trim();
-  text = text.replace(/^[¥￥$€£]\s*/, '').replace(/,/g, '');
-  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) return null;
-  let number = Number(text);
-  if (!Number.isFinite(number)) return null;
-  if (negative) number = -Math.abs(number);
-  if (percentage && percentageMode === 'decimal') number /= 100;
-  return String(number);
+  const currency = /^[¥￥$€£]\s*/.test(text);
+  text = text.replace(/^[¥￥$€£]\s*/, '');
+
+  // Normalize decimal text directly instead of round-tripping through a
+  // JavaScript double. This preserves integers above Number.MAX_SAFE_INTEGER
+  // and arbitrary decimal digits, while rejecting malformed grouping such as
+  // "12,34" rather than silently interpreting it as 1234.
+  const match = text.match(
+    /^([+-]?)(?:(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?|\.(\d+))$/,
+  );
+  if (!match) return null;
+
+  const sign = match[1];
+  const integer = (match[2] ?? '0').replace(/,/g, '');
+  const fraction = match[3] ?? match[4] ?? '';
+  const magnitude = fraction ? `${integer}.${fraction}` : integer;
+  let normalized =
+    sign === '-' || negative
+      ? `-${magnitude.replace(/^-/, '')}`
+      : magnitude;
+
+  if (percentage && percentageMode === 'decimal') {
+    const isNegative = normalized.startsWith('-');
+    const unsigned = isNegative ? normalized.slice(1) : normalized;
+    const [whole, decimal = ''] = unsigned.split('.');
+    const digits = `${whole}${decimal}`;
+    const point = whole.length - 2;
+    const shifted =
+      point <= 0
+        ? `0.${'0'.repeat(-point)}${digits}`
+        : `${digits.slice(0, point)}.${digits.slice(point)}`;
+    const [shiftedWhole, shiftedFraction = ''] = shifted.split('.');
+    const canonicalWhole = shiftedWhole.replace(/^0+(?=\d)/, '');
+    const canonicalFraction = shiftedFraction;
+    const canonicalMagnitude = canonicalFraction
+      ? `${canonicalWhole}.${canonicalFraction}`
+      : canonicalWhole;
+    normalized =
+      isNegative && canonicalMagnitude !== '0'
+        ? `-${canonicalMagnitude}`
+        : canonicalMagnitude;
+  }
+
+  // A plain valid numeric literal needs no normalization. Preserve its
+  // formatting so identifier-like values (00123) and declared decimal scale
+  // (1.2300) are not changed merely because inference labelled the column
+  // NUMERIC. Explicit wrappers and separators still produce a visible diff.
+  if (!negative && !percentage && !currency && !text.includes(',')) {
+    return normalizeFullWidth(value).trim();
+  }
+
+  return normalized;
 }
 
 function normalizeBoolean(
@@ -79,17 +114,99 @@ function validateColumns(recipe: CleaningRecipe, table: DiscoveredTable) {
   }
 }
 
+interface ExactDecimal {
+  coefficient: bigint;
+  scale: number;
+}
+
+function parseExactDecimal(value: string): ExactDecimal | null {
+  const match = value.trim().match(/^([+-]?)(\d+)(?:\.(\d+))?$/);
+  if (!match) return null;
+  const sign = match[1] === '-' ? -1n : 1n;
+  const fraction = match[3] ?? '';
+  return { coefficient: sign * BigInt(`${match[2]}${fraction}`), scale: fraction.length };
+}
+
+function greatestCommonDivisor(a: bigint, b: bigint): bigint {
+  let left = a < 0n ? -a : a;
+  let right = b < 0n ? -b : b;
+  while (right !== 0n) {
+    const remainder = left % right;
+    left = right;
+    right = remainder;
+  }
+  return left;
+}
+
+function formatExactDecimal(value: ExactDecimal): string {
+  let coefficient = value.coefficient;
+  let scale = value.scale;
+  while (scale > 0 && coefficient % 10n === 0n) {
+    coefficient /= 10n;
+    scale--;
+  }
+  const negative = coefficient < 0n;
+  const digits = (negative ? -coefficient : coefficient).toString().padStart(scale + 1, '0');
+  const result = scale === 0
+    ? digits
+    : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  return negative && coefficient !== 0n ? `-${result}` : result;
+}
+
+function exactAverage(coefficients: bigint[], scale: number): string {
+  let numerator = coefficients.reduce((sum, value) => sum + value, 0n);
+  let denominator = BigInt(coefficients.length);
+  const divisor = greatestCommonDivisor(numerator, denominator);
+  numerator /= divisor;
+  denominator /= divisor;
+
+  let twos = 0;
+  let fives = 0;
+  while (denominator % 2n === 0n) {
+    denominator /= 2n;
+    twos++;
+  }
+  while (denominator % 5n === 0n) {
+    denominator /= 5n;
+    fives++;
+  }
+  if (denominator !== 1n) {
+    throw new Error(
+      'Mean fill would require implicit rounding. Use a fixed fill value instead.',
+    );
+  }
+
+  const extraScale = Math.max(twos, fives);
+  const multiplier = (2n ** BigInt(extraScale - twos)) *
+    (5n ** BigInt(extraScale - fives));
+  return formatExactDecimal({
+    coefficient: numerator * multiplier,
+    scale: scale + extraScale,
+  });
+}
+
 function computeFill(rows: CleaningRow[], column: string, strategy: 'mean' | 'median'): string | null {
-  const values = rows
+  const sourceValues = rows
     .map((row) => asText(row[column]))
-    .filter((value): value is string => value != null && value.trim() !== '')
-    .map((value) => Number(value))
-    .filter((value) => Number.isFinite(value));
+    .filter((value): value is string => value != null && value.trim() !== '');
+  const values = sourceValues.map(parseExactDecimal);
+  if (values.some((value) => value == null)) {
+    throw new Error(
+      `${strategy === 'mean' ? 'Mean' : 'Median'} fill requires every non-missing value in ${column} to be a plain decimal.`,
+    );
+  }
   if (values.length === 0) return null;
-  if (strategy === 'mean') return String(values.reduce((sum, value) => sum + value, 0) / values.length);
-  values.sort((a, b) => a - b);
+  const decimals = values as ExactDecimal[];
+  const scale = Math.max(...decimals.map((value) => value.scale));
+  const coefficients = decimals.map(
+    (value) => value.coefficient * (10n ** BigInt(scale - value.scale)),
+  );
+  if (strategy === 'mean') return exactAverage(coefficients, scale);
+  coefficients.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const middle = Math.floor(values.length / 2);
-  return String(values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2);
+  return values.length % 2
+    ? formatExactDecimal({ coefficient: coefficients[middle], scale })
+    : exactAverage([coefficients[middle - 1], coefficients[middle]], scale);
 }
 
 /** Execute a structured recipe without evaluating generated SQL or code. */
@@ -101,6 +218,8 @@ export function executeCleaningRecipe(
   validateColumns(recipe, table);
   const original = new Map(input.map((row) => [row._row_id, { ...row }]));
   let rows = input.map((row) => ({ ...row }));
+  const removedRowsById = new Map<number, CleaningRow>();
+  const removedRowSamples: NonNullable<CleaningSummary['removedRowSamples']> = [];
   let parseFailures = 0;
   const parseFailureSamples: CleaningSummary['parseFailureSamples'] = [];
   const recordParseFailure = (
@@ -118,18 +237,45 @@ export function executeCleaningRecipe(
   for (const step of recipe.steps) {
     if (step.type === 'drop_duplicates') {
       const keys = step.keys?.length ? step.keys : table.columns.map((column) => column.name);
-      const seen = new Set<string>();
+      const seen = new Map<string, number>();
       rows = rows.filter((row) => {
         const key = JSON.stringify(keys.map((column) => asText(row[column])));
-        if (seen.has(key)) return false;
-        seen.add(key);
+        const keptRowId = seen.get(key);
+        if (keptRowId !== undefined) {
+          removedRowsById.set(row._row_id, { ...row });
+          if (removedRowSamples.length < SAMPLE_LIMIT) {
+            removedRowSamples.push({
+              rowId: row._row_id,
+              reason: 'duplicate',
+              keptRowId,
+              columns: [...keys],
+              match: step.keys?.length ? 'selected_columns' : 'all_columns',
+            });
+          }
+          return false;
+        }
+        seen.set(key, row._row_id);
         return true;
       });
       continue;
     }
 
     if (step.type === 'remove_missing_rows') {
-      rows = rows.filter((row) => !step.columns.some((column) => asText(row[column]) == null));
+      rows = rows.filter((row) => {
+        const missingColumns = step.columns.filter(
+          (column) => asText(row[column]) == null,
+        );
+        if (missingColumns.length === 0) return true;
+        removedRowsById.set(row._row_id, { ...row });
+        if (removedRowSamples.length < SAMPLE_LIMIT) {
+          removedRowSamples.push({
+            rowId: row._row_id,
+            reason: 'missing_value',
+            columns: missingColumns,
+          });
+        }
+        return false;
+      });
       continue;
     }
 
@@ -158,7 +304,7 @@ export function executeCleaningRecipe(
         else if (step.type === 'normalize_whitespace') row[column] = current.replace(/\s+/g, ' ').trim();
         else if (step.type === 'fullwidth_to_halfwidth') row[column] = normalizeFullWidth(current);
         else if (step.type === 'normalize_null') {
-          if (step.markers.some((marker) => current.trim().toLowerCase() === marker.trim().toLowerCase())) row[column] = null;
+          if (matchesTextMarker(current, step.markers)) row[column] = null;
         } else if (step.type === 'normalize_numeric') {
           const normalized = normalizeNumber(current, step.percentageMode);
           if (normalized == null) {
@@ -189,16 +335,20 @@ export function executeCleaningRecipe(
   let affectedCells = 0;
   let generatedNulls = 0;
   const samples: CleaningSummary['samples'] = [];
-  for (const row of rows) {
-    const before = original.get(row._row_id)!;
+  const finalRowsById = new Map(
+    [...rows, ...removedRowsById.values()].map((row) => [row._row_id, row]),
+  );
+  for (const [rowId, before] of original) {
+    const row = finalRowsById.get(rowId);
+    if (!row) continue;
     for (const column of table.columns) {
       const oldValue = asText(before[column.name]);
       const newValue = asText(row[column.name]);
       if (oldValue !== newValue) {
         affectedCells++;
-        affectedRowIds.add(row._row_id);
+        affectedRowIds.add(rowId);
         if (oldValue != null && newValue == null) generatedNulls++;
-        if (samples.length < SAMPLE_LIMIT) samples.push({ rowId: row._row_id, column: column.name, before: oldValue, after: newValue });
+        if (samples.length < SAMPLE_LIMIT) samples.push({ rowId, column: column.name, before: oldValue, after: newValue });
       }
     }
   }
@@ -216,6 +366,7 @@ export function executeCleaningRecipe(
       parseFailures,
       parseFailureSamples,
       samples,
+      removedRowSamples,
     },
   };
 }

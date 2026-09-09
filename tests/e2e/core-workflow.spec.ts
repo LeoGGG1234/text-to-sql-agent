@@ -54,6 +54,20 @@ test('an anonymous session can reach account upgrade without being redirected ho
 
 test('stale profile can be refreshed and cleaning requires preview before apply', async ({ page }) => {
   let applied = false;
+  await page.unroute('**/api/conversations');
+  await page.route('**/api/conversations', (route) => route.fulfill({ json: { conversations: [{
+    id: 'conv-old',
+    title: 'Old analysis',
+    updatedAt: '2026-09-08T00:00:00.000Z',
+    createdAt: '2026-09-08T00:00:00.000Z',
+    messageCount: 1,
+  }] } }));
+  await page.route('**/api/conversations/conv-old', (route) => route.fulfill({ json: {
+    id: 'conv-old',
+    dataSourceId: null,
+    dataSourceName: null,
+    messages: [{ id: 'message-old', role: 'user', parts: [{ content: 'old conversation message' }] }],
+  } }));
   await page.route('**/api/data-sources', (route) => route.fulfill({ json: { dataSources: [{ ...dataSource, profileStatus: applied ? 'fresh' : 'stale' }] } }));
   await page.route('**/api/data-sources/ds-meta-1', (route) => route.fulfill({ json: { ...dataSource, profileStatus: applied ? 'fresh' : 'stale' } }));
   await page.route('**/api/data-sources/ds-meta-1/rows?**', (route) => route.fulfill({ json: {
@@ -65,8 +79,19 @@ test('stale profile can be refreshed and cleaning requires preview before apply'
   await page.route('**/api/data-sources/ds-meta-1/profile', (route) => route.fulfill({ json: { profileStatus: 'fresh' } }));
   await page.route('**/api/data-sources/ds-meta-1/cleaning-runs', (route) => route.fulfill({ json: { runs: applied ? [{
     id: 'run-1',
-    recipe: { name: 'Standard preset', steps: [{ type: 'normalize_whitespace', columns: ['customer'] }] },
-    previewSummary: { inputRows: 2, outputRows: 2, affectedRows: 1, affectedCells: 1, removedRows: 0, generatedNulls: 0, parseFailures: 0, parseFailureSamples: [], samples: [] },
+    recipe: { name: 'Standard preset', steps: [{ type: 'normalize_whitespace', columns: ['customer'] }, { type: 'drop_duplicates' }] },
+    previewSummary: {
+      inputRows: 2,
+      outputRows: 1,
+      affectedRows: 2,
+      affectedCells: 1,
+      removedRows: 1,
+      generatedNulls: 0,
+      parseFailures: 0,
+      parseFailureSamples: [],
+      samples: [],
+      removedRowSamples: [{ rowId: 2, reason: 'duplicate', keptRowId: 1, columns: ['customer', 'amount'], match: 'all_columns' }],
+    },
     beforeValidation: dataSource.schemaJson.qualityProfile.table,
     afterValidation: { ...dataSource.schemaJson.qualityProfile.table, columnsWithIssues: 0 },
     status: 'applied',
@@ -78,8 +103,19 @@ test('stale profile can be refreshed and cleaning requires preview before apply'
   await page.route('**/api/data-sources/ds-meta-1/cleaning/preview', (route) => {
     const requestBody = route.request().postDataJSON() as { recipe?: { name: string; steps: unknown[] } };
     return route.fulfill({ json: {
-      runId: 'run-1', recipe: requestBody.recipe ?? { name: 'Standard preset', steps: [{ type: 'normalize_whitespace', columns: ['customer'] }] },
-      summary: { inputRows: 2, outputRows: 2, affectedRows: 1, affectedCells: 1, removedRows: 0, generatedNulls: 0, parseFailures: 1, parseFailureSamples: [{ rowId: 2, column: 'amount', value: 'bad%', reason: 'invalid_numeric' }], samples: [{ rowId: 1, column: 'customer', before: ' A ', after: 'A' }] },
+      runId: 'run-1', recipe: requestBody.recipe ?? { name: 'Standard preset', steps: [{ type: 'normalize_whitespace', columns: ['customer'] }, { type: 'drop_duplicates' }] },
+      summary: {
+        inputRows: 2,
+        outputRows: 1,
+        affectedRows: 2,
+        affectedCells: 1,
+        removedRows: 1,
+        generatedNulls: 0,
+        parseFailures: 1,
+        parseFailureSamples: [{ rowId: 2, column: 'amount', value: 'bad%', reason: 'invalid_numeric' }],
+        samples: [{ rowId: 1, column: 'customer', before: ' A ', after: 'A' }],
+        removedRowSamples: [{ rowId: 2, reason: 'duplicate', keptRowId: 1, columns: ['customer', 'amount'], match: 'all_columns' }],
+      },
     } });
   });
   await page.route('**/api/data-sources/ds-meta-1/export', (route) => route.fulfill({
@@ -98,12 +134,17 @@ test('stale profile can be refreshed and cleaning requires preview before apply'
   });
 
   await page.goto('/');
+  await page.getByRole('button', { name: /Old analysis/ }).click();
+  await expect(page.getByText('old conversation message')).toBeVisible();
+  await page.getByRole('button', { name: /Old analysis/ }).click();
+  await expect(page.getByRole('textbox')).toBeEnabled();
   await page.getByRole('button', { name: /Data Sources/ }).click();
   await expect(page.getByText('Quality profile is stale')).toBeHidden();
   await page.getByRole('button', { name: 'Schema' }).click();
   await expect(page.getByText(/Quality profile is stale/)).toBeVisible();
   await page.getByRole('button', { name: 'View Data' }).click();
   await expect(page.getByText('profile stale')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Analyze this data' })).toBeVisible();
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export CSV' }).click();
   expect((await downloadPromise).suggestedFilename()).toBe('orders-export.csv');
@@ -127,6 +168,13 @@ test('stale profile can be refreshed and cleaning requires preview before apply'
   await expect(page.getByText('Applied runs', { exact: true })).toBeVisible();
   await page.getByText('Standard preset').click();
   await expect(page.getByText('Run impact')).toBeVisible();
+  await expect(page.getByText('Removed row evidence')).toBeVisible();
+  await expect(page.getByText('duplicate of #1 by all columns')).toBeVisible();
   await expect(page.getByText('3 → 4')).toBeVisible();
   await expect(page.getByText('Validation', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Analyze cleaned data' }).click();
+  await expect(page.getByText('old conversation message')).toBeHidden();
+  await expect(page.getByRole('button', { name: /orders\.xlsx/ })).toBeVisible();
+  await expect(page.getByText('正在分析“orders.xlsx”。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '这份数据有多少行、多少个字段？请先查看 Schema 再回答。' })).toBeVisible();
 });

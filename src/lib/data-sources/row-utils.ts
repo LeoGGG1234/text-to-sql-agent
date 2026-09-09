@@ -9,6 +9,7 @@
 
 import type { DiscoveredColumn, DiscoveredTable, SchemaJson } from './types';
 import { NULL_LIKE_VALUES } from './type-detector';
+import { matchesTextMarker } from './value-parsers';
 
 /** Escape a string value for safe SQL embedding (PostgreSQL single-quote style). */
 export function escapeSqlValue(value: string): string {
@@ -58,7 +59,7 @@ export function serializeRow(row: Record<string, unknown>): Record<string, unkno
 
 /** Convert a value that looks null-like (N/A, 无, etc.) to a real SQL NULL. */
 export function isNullLike(v: string): boolean {
-  return NULL_LIKE_VALUES.has(v);
+  return matchesTextMarker(v, NULL_LIKE_VALUES);
 }
 
 // ─── Custom error classes ──────────────────────────────────────

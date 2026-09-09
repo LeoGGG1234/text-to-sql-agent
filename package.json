@@ -17,7 +17,7 @@
     "db:check": "node --import tsx scripts/check-deployment-readiness.ts",
     "guest:cleanup": "node --import tsx scripts/cleanup-anonymous-users.ts",
     "seed": "npx tsx scripts/seed-retail-db.ts",
-    "eval": "npx tsx eval/run-eval.ts"
+    "eval": "node --import tsx eval/run-eval.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^1",

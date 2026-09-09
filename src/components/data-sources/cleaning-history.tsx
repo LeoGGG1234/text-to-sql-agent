@@ -64,6 +64,39 @@ function RunImpact({ summary }: { summary: CleaningSummary }) {
   );
 }
 
+export function RemovedRowEvidence({ summary }: { summary: CleaningSummary }) {
+  const samples = summary.removedRowSamples ?? [];
+  if (samples.length === 0) return null;
+
+  return (
+    <div className="rounded border border-rose-900/40 bg-rose-950/20 p-2">
+      <div className="mb-1 font-medium text-rose-300">Removed row evidence</div>
+      <div className="space-y-1 text-zinc-400">
+        {samples.map((sample) => (
+          <div key={`${sample.reason}-${sample.rowId}`}>
+            <span className="text-zinc-500">#{sample.rowId}: </span>
+            {sample.reason === 'duplicate' ? (
+              <span>
+                duplicate of #{sample.keptRowId} by{' '}
+                {sample.match === 'all_columns'
+                  ? 'all columns'
+                  : sample.columns.join(', ')}
+              </span>
+            ) : (
+              <span>missing {sample.columns.join(', ')}</span>
+            )}
+          </div>
+        ))}
+      </div>
+      {summary.removedRows > samples.length ? (
+        <p className="mt-1 text-[10px] text-zinc-600">
+          Showing {samples.length} of {summary.removedRows} removed rows.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function CleaningHistory({ history, loading }: { history: CleaningRun[]; loading: boolean }) {
   const appliedRuns = history.filter((run) => run.status === 'applied');
   const totals = appliedRuns.reduce((result, run) => {
@@ -134,7 +167,12 @@ export function CleaningHistory({ history, loading }: { history: CleaningRun[]; 
                     </div>
                     <div>
                       <div className="mb-1 font-medium text-zinc-300">Run impact</div>
-                      {run.previewSummary ? <RunImpact summary={run.previewSummary} /> : <p className="text-zinc-600">Impact summary unavailable.</p>}
+                      {run.previewSummary ? (
+                        <div className="space-y-2">
+                          <RunImpact summary={run.previewSummary} />
+                          <RemovedRowEvidence summary={run.previewSummary} />
+                        </div>
+                      ) : <p className="text-zinc-600">Impact summary unavailable.</p>}
                     </div>
                     <div className="flex justify-between text-zinc-400">
                       <span>Data revision</span>

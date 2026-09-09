@@ -13,6 +13,13 @@ const EXAMPLE_QUESTIONS = [
   { zh: '哪个产品类别的退货率最高？', en: 'Which product category has the highest return rate?' },
 ];
 
+const UPLOADED_DATA_EXAMPLES = [
+  '这份数据有多少行、多少个字段？请先查看 Schema 再回答。',
+  '这份数据主要记录什么？请先查看 Schema，并用抽样结果验证。',
+  '哪些列包含 NULL 或格式异常？请用 SQL 给出可复核统计。',
+  '请选择一个合适的业务维度汇总核心指标，并明确计算口径。',
+];
+
 interface ProviderOption {
   id: string;
   label: string;
@@ -37,6 +44,8 @@ interface ChatAreaProps {
   conversationId: string | null;
   /** Active data source ID — null means use retail demo */
   dataSourceId?: string | null;
+  /** Display name for the active uploaded data source */
+  dataSourceName?: string | null;
   /** True while the selected conversation's persisted data source is loading */
   conversationContextLoading?: boolean;
   /** Callback when the first message is sent (conversation needs creation) */
@@ -46,6 +55,7 @@ interface ChatAreaProps {
 export function ChatArea({
   conversationId,
   dataSourceId,
+  dataSourceName,
   conversationContextLoading = false,
   onConversationCreated,
 }: ChatAreaProps) {
@@ -182,18 +192,22 @@ export function ChatArea({
           <div className="text-center mt-16">
             <p className="text-3xl mb-3">📊</p>
             <p className="text-zinc-400 text-sm mb-6">
-              用自然语言查询零售销售数据库。
+              {dataSourceId
+                ? `正在分析“${dataSourceName ?? '已上传数据'}”。`
+                : '用自然语言查询零售销售数据库。'}
               <br />
-              我会自动生成 SQL、安全执行、并把结果画成图表。
+              {dataSourceId
+                ? '先查看 Schema，再用可复核的 SQL 回答数据问题。'
+                : '我会自动生成 SQL、安全执行、并把结果画成图表。'}
             </p>
             <div className="space-y-2 max-w-sm mx-auto">
-              {EXAMPLE_QUESTIONS.map((q, i) => (
+              {(dataSourceId ? UPLOADED_DATA_EXAMPLES : EXAMPLE_QUESTIONS.map((q) => q.zh)).map((question) => (
                 <button
-                  key={i}
-                  onClick={() => fillExample(q.zh)}
+                  key={question}
+                  onClick={() => fillExample(question)}
                   className="w-full text-left px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-400 hover:border-zinc-700 hover:text-zinc-300 transition"
                 >
-                  {q.zh}
+                  {question}
                 </button>
               ))}
             </div>
@@ -285,7 +299,9 @@ export function ChatArea({
           placeholder={
             conversationContextLoading
               ? '正在加载会话数据源...'
-              : '问一个关于销售数据的问题...'
+              : dataSourceId
+                ? `询问关于${dataSourceName ?? '这份数据'}的问题...`
+                : '问一个关于销售数据的问题...'
           }
           className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 transition"
           disabled={isLoading || conversationContextLoading}

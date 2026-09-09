@@ -18,7 +18,7 @@ function cellToString(cell: unknown): string {
  *
  * Numbers are kept as their source decimal strings to avoid introducing
  * JavaScript floating-point rounding before values reach the TEXT-backed
- * analytical table. String trimming remains an explicit import step.
+ * analytical table. Cell text is preserved until an explicit cleaning recipe.
  */
 export async function parseXlsxTable(
   input: Buffer,

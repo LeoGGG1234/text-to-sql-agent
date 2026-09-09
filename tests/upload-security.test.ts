@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
+  withDatabaseTransaction: vi.fn(),
 }));
 
 vi.mock('@/lib/auth-helpers', () => ({
@@ -10,6 +11,10 @@ vi.mock('@/lib/auth-helpers', () => ({
 
 vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: vi.fn(() => ({ allowed: true })),
+}));
+
+vi.mock('@/lib/database-transaction', () => ({
+  withDatabaseTransaction: mocks.withDatabaseTransaction,
 }));
 
 import { POST } from '../src/app/api/data-sources/upload/route';
@@ -26,6 +31,7 @@ function uploadRequest(file: File) {
 describe('POST /api/data-sources/upload safety gates', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.withDatabaseTransaction.mockReset();
     mocks.getSession.mockResolvedValue({ user: { id: 'user-a' } });
   });
 
@@ -62,6 +68,80 @@ describe('POST /api/data-sources/upload safety gates', () => {
     await expect(response.json()).resolves.toEqual({
       error:
         'Legacy .xls files are not supported. Save the file as .xlsx or CSV and try again.',
+    });
+  });
+
+  it('rejects CSV rows wider than the header before persistence', async () => {
+    vi.stubEnv(
+      'USERDATA_DATABASE_URL',
+      'postgresql://userdata-readonly.example/test',
+    );
+
+    const response = await POST(
+      uploadRequest(
+        new File(
+          ['name,amount\nalpha,10,valuable_extra\nbeta,20,different_extra'],
+          'ragged.csv',
+          { type: 'text/csv' },
+        ),
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        'CSV parse error: Row 2 has 3 fields; expected 2 based on the header.',
+    });
+  });
+
+  it('persists raw cell text and profiles markers without converting them to NULL', async () => {
+    vi.stubEnv(
+      'USERDATA_DATABASE_URL',
+      'postgresql://userdata-readonly.example/test',
+    );
+    vi.stubEnv('DATABASE_URL', 'postgresql://admin.example/test');
+    const queries: Array<{ text: string; values?: unknown[] }> = [];
+    mocks.withDatabaseTransaction.mockImplementation(
+      async (_url: string, work: (client: { query: (text: string, values?: unknown[]) => Promise<unknown> }) => Promise<unknown>) =>
+        work({
+          query: async (text, values) => {
+            queries.push({ text, values });
+            return { rows: [] };
+          },
+        }),
+    );
+
+    const response = await POST(
+      uploadRequest(
+        new File(['code,note\nＡ０１, NA \nA02,无'], 'raw.csv', {
+          type: 'text/csv',
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const tableInsert = queries.find(({ text }) =>
+      text.startsWith('INSERT INTO userdata."ds_'),
+    );
+    expect(tableInsert?.values).toEqual(['Ａ０１', ' NA ', 'A02', '无']);
+
+    const metadataInsert = queries.find(({ text }) =>
+      text.startsWith('INSERT INTO data_sources'),
+    );
+    const schemaJson = JSON.parse(String(metadataInsert?.values?.[4]));
+    expect(schemaJson.qualityProfile).toMatchObject({
+      version: 2,
+      columns: {
+        note: {
+          databaseNullCount: 0,
+          nullMarkerCount: 2,
+          trimmedCount: 1,
+        },
+      },
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      quality: { databaseNulls: 0, nullMarkers: 2 },
     });
   });
 });

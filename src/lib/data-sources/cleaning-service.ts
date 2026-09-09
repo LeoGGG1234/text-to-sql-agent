@@ -2,8 +2,9 @@ import { neon } from '@neondatabase/serverless';
 import { quoteIdent, validateTableName } from './row-utils';
 import type { CleaningRow } from './cleaning-types';
 import type { DiscoveredTable, SchemaJson } from './types';
+import { MAX_INTERACTIVE_DATA_ROWS } from './upload-limits';
 
-export const MAX_CLEANING_ROWS = 50_000;
+export const MAX_CLEANING_ROWS = MAX_INTERACTIVE_DATA_ROWS;
 
 export function resolveCleaningTable(schemaJson: SchemaJson): DiscoveredTable {
   const table = schemaJson.tables[0];

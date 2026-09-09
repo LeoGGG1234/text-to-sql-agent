@@ -1,14 +1,15 @@
 /**
  * Data quality analyzer — full-scan profiling of uploaded CSV/Excel data.
  *
- * Runs after pre-cleaning (trim) and semantic type detection, before INSERT.
- * All analysis is 100% full-scan — no sampling (max 10k rows, < 10ms in Node).
+ * Runs against the values that are actually stored, after semantic type
+ * detection. Aggregate counts are full-scan; fuzzy matching is deliberately
+ * bounded for high-cardinality text columns.
  *
  * Key outputs:
- *   Q1 — NULL-like values identified (converted to real NULL at INSERT).
+ *   Q1 — Database NULLs and NULL-like text markers, counted separately.
  *   Q2 — Non-matching values vs detected semanticType.
  *   Q3 — Duplicate rows.
- *   Q4 — Whitespace trimmed (stats only, already cleaned).
+ *   Q4 — Leading/trailing whitespace observed in stored values.
  *   Q5 — Column length stats (min/max).
  */
 
@@ -19,6 +20,7 @@ import type {
   QualityProfile,
 } from './types';
 import { NULL_LIKE_VALUES } from './type-detector';
+import { matchesTextMarker, parseDateValue } from './value-parsers';
 
 /** Max number of non-matching sample values to collect per column. */
 const MAX_SAMPLES = 3;
@@ -39,45 +41,45 @@ const MAX_FREQ_MAP_SIZE = 10_000;
 
 // ─── Semantic type pattern matching (mirrors type-detector.ts) ───
 
-function matchesSemanticType(
+function classifySemanticValue(
   v: string,
   semanticType: DiscoveredColumn['semanticType'],
-): boolean {
+): 'valid' | 'invalid' | 'ambiguous' {
   const t = v.trim();
   switch (semanticType) {
     case 'NUMERIC':
-      return /^-?\d+(\.\d+)?$/.test(t);
-    case 'DATE':
-      return [
-        /^\d{4}-\d{2}-\d{2}$/,
-        /^\d{1,2}\/\d{1,2}\/\d{4}$/,
-        /^\d{1,2}\/\d{1,2}\/\d{2}$/,
-        /^\d{4}\/\d{1,2}\/\d{1,2}$/,
-        /^\d{1,2}-\d{1,2}-\d{4}$/,
-      ].some((p) => p.test(t));
+      return /^-?\d+(\.\d+)?$/.test(t) ? 'valid' : 'invalid';
+    case 'DATE': {
+      const result = parseDateValue(t);
+      return result.status === 'valid'
+        ? 'valid'
+        : result.status === 'ambiguous'
+          ? 'ambiguous'
+          : 'invalid';
+    }
     case 'BOOLEAN':
-      return ['true', 'false', 'yes', 'no', '0', '1', 'y', 'n'].includes(
-        t.toLowerCase(),
-      );
+      return ['true', 'false', 'yes', 'no', '0', '1', 'y', 'n'].includes(t.toLowerCase())
+        ? 'valid'
+        : 'invalid';
     default:
-      return true; // TEXT — no type mismatch possible
+      return 'valid'; // TEXT — no type mismatch possible
   }
 }
 
 // ─── NULL-like detection ──────────────────────────────────────
 
 function isNullLike(v: string): boolean {
-  return NULL_LIKE_VALUES.has(v.trim());
+  return matchesTextMarker(v, NULL_LIKE_VALUES);
 }
 
 // ─── Duplicate row detection ──────────────────────────────────
 
-export function rowKey(row: string[]): string {
-  // Join with U+0000 (null character) as delimiter.
-  // Null bytes cannot appear in CSV/Excel data — Papa Parse strips them
-  // from CSV, and XLSX stores cell values as XML where null is invalid.
-  // This is ~20% smaller and faster than JSON.stringify for large datasets.
-  return row.join('\x00');
+export function rowKey(row: Array<string | null>): string {
+  // Length-prefix each value so SQL NULL, empty strings, delimiters, and
+  // arbitrary user text remain distinct without relying on a sentinel byte.
+  return row
+    .map((value) => (value == null ? '-1:' : `${value.length}:${value}`))
+    .join('|');
 }
 
 // ─── Fuzzy duplicate detection ────────────────────────────────
@@ -192,14 +194,14 @@ function detectFuzzyDuplicates(
  * Run full-scan quality analysis on uploaded data.
  *
  * @param headers           — Original (sanitised) column headers.
- * @param rows              — Already-trimmed row data (string[][]).
+ * @param rows              — Stored row data; SQL NULL remains distinct.
  * @param columns           — Discovered columns from type-detector.
  * @param whitespaceCounts  — Per-column count of values that had
- *                            leading/trailing whitespace before trim.
+ *                            leading/trailing whitespace.
  */
 export function analyzeQuality(
   headers: string[],
-  rows: string[][],
+  rows: Array<Array<string | null>>,
   columns: DiscoveredColumn[],
   whitespaceCounts: number[],
 ): QualityProfile {
@@ -208,21 +210,27 @@ export function analyzeQuality(
   // ── Per-column analysis ───────────────────────────────────
   for (let ci = 0; ci < columns.length; ci++) {
     const col = columns[ci];
-    const values = rows.map((r) => String(r[ci] ?? ''));
+    const values = rows.map((row) => {
+      const value = row[ci];
+      return value == null ? null : String(value);
+    });
 
-    // Q1: NULL-like detection.
-    const nullConvertedSamples: Record<string, number> = {};
-    let nullConvertedCount = 0;
+    // Q1: distinguish real database NULLs from marker strings that remain TEXT.
+    const databaseNullCount = values.filter((value) => value == null).length;
+    const nullMarkerSamples: Record<string, number> = {};
+    let nullMarkerCount = 0;
     for (const v of values) {
-      if (isNullLike(v)) {
-        nullConvertedCount++;
+      if (v != null && isNullLike(v)) {
+        nullMarkerCount++;
         const key = v === '' ? '(empty)' : v;
-        nullConvertedSamples[key] = (nullConvertedSamples[key] ?? 0) + 1;
+        nullMarkerSamples[key] = (nullMarkerSamples[key] ?? 0) + 1;
       }
     }
 
     // Q2: Non-matching type values (only for non-TEXT semantic types).
     let nonMatchingCount = 0;
+    let invalidCount = 0;
+    let ambiguousCount = 0;
     const nonMatchingSamples: string[] = [];
     // Track uniqueness for non-TEXT columns (capped at MAX_UNIQUE_SET to
     // prevent memory blow-up on high-cardinality NUMERIC/DATE columns).
@@ -234,9 +242,8 @@ export function analyzeQuality(
     let maxLen = 0;
 
     for (const v of values) {
-      // Skip NULL-like values from Q2 (they don't "mismatch" the type;
-      // they're already handled as NULLs).
-      if (isNullLike(v)) continue;
+      // Missing values and marker strings have their own explicit signals.
+      if (v == null || isNullLike(v)) continue;
 
       const len = v.length;
       if (len < minLen) minLen = len;
@@ -246,8 +253,11 @@ export function analyzeQuality(
       if (uniqueSet && uniqueSet.size < MAX_UNIQUE_SET) uniqueSet.add(v);
 
       // Check type match.
-      if (col.semanticType !== 'TEXT' && !matchesSemanticType(v, col.semanticType)) {
+      const classification = classifySemanticValue(v, col.semanticType);
+      if (col.semanticType !== 'TEXT' && classification !== 'valid') {
         nonMatchingCount++;
+        if (classification === 'ambiguous') ambiguousCount++;
+        else invalidCount++;
         if (nonMatchingSamples.length < MAX_SAMPLES) {
           // Truncate long samples.
           nonMatchingSamples.push(v.length > 40 ? v.slice(0, 37) + '...' : v);
@@ -255,7 +265,7 @@ export function analyzeQuality(
       }
     }
 
-    const nonNullCount = values.length - nullConvertedCount;
+    const nonNullCount = values.length - databaseNullCount - nullMarkerCount;
     const nonMatchingRatio =
       nonNullCount > 0 ? nonMatchingCount / nonNullCount : 0;
 
@@ -265,12 +275,15 @@ export function analyzeQuality(
     // type constraints that already catch structural issues).
     const fuzzy =
       col.semanticType === 'TEXT'
-        ? detectFuzzyDuplicates(values)
+        ? detectFuzzyDuplicates(values.filter((value): value is string => value != null))
         : { clusters: 0, samples: [] };
 
     colProfiles[col.name] = {
-      nullConvertedCount,
-      nullConvertedSamples,
+      databaseNullCount,
+      nullMarkerCount,
+      nullMarkerSamples,
+      invalidCount,
+      ambiguousCount,
       nonMatchingCount,
       nonMatchingRatio,
       nonMatchingSamples,
@@ -301,8 +314,10 @@ export function analyzeQuality(
   let columnsWithIssues = 0;
   for (const cp of Object.values(colProfiles)) {
     if (
-      cp.nullConvertedCount > 0 ||
-      cp.nonMatchingRatio > 0.05 ||
+      (cp.databaseNullCount ?? 0) > 0 ||
+      (cp.nullMarkerCount ?? 0) > 0 ||
+      cp.nonMatchingCount > 0 ||
+      cp.trimmedCount > 0 ||
       cp.fuzzyDuplicateClusters > 0
     ) {
       columnsWithIssues++;
@@ -316,7 +331,7 @@ export function analyzeQuality(
     columnsWithIssues,
   };
 
-  return { columns: colProfiles, table: tableProfile };
+  return { columns: colProfiles, table: tableProfile, version: 2 };
 }
 
 // ─── Helper for chat/route.ts: build quality note ─────────────
@@ -337,26 +352,51 @@ export function buildQualityNote(
 
   const warnings: string[] = [];
 
-  if (profile.nonMatchingRatio > 0.05) {
+  if (profile.nonMatchingCount > 0) {
     const pct = Math.round(profile.nonMatchingRatio * 100);
     const samples = profile.nonMatchingSamples.join(', ');
     warnings.push(
-      `About ${pct}% of values are not valid ${col.semanticType} literals` +
+      `${profile.nonMatchingCount} values (${pct}%) are invalid or ambiguous ${col.semanticType} literals` +
         (samples ? ` (e.g. "${samples}").` : '.') +
         ` Filter these out before CASTing (use NOT IN or a LIKE pattern).`,
     );
   }
 
-  if (profile.nullConvertedCount > 0) {
-    const topSamples = Object.entries(profile.nullConvertedSamples)
+  const isCurrentProfile =
+    profile.databaseNullCount !== undefined || profile.nullMarkerCount !== undefined;
+  const databaseNullCount = isCurrentProfile
+    ? profile.databaseNullCount ?? 0
+    : profile.nullConvertedCount ?? 0;
+  if (databaseNullCount > 0) {
+    const legacySamples = !isCurrentProfile
+      ? Object.keys(profile.nullConvertedSamples ?? {}).slice(0, 3)
+      : [];
+    warnings.push(
+      `${databaseNullCount} rows contain database NULL` +
+        (legacySamples.length > 0
+          ? ` (legacy import markers: ${legacySamples.map((value) => `"${value}"`).join(', ')}).`
+          : '.') +
+        ` Use IS NOT NULL to exclude them.`,
+    );
+  }
+
+  const nullMarkerCount = profile.nullMarkerCount ?? 0;
+  if (nullMarkerCount > 0) {
+    const topSamples = Object.entries(profile.nullMarkerSamples ?? {})
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
       .map(([k]) => (k === '(empty)' ? 'empty strings' : `"${k}"`))
       .join(', ');
     warnings.push(
-      `${profile.nullConvertedCount} rows have NULL-like values` +
-        (topSamples ? ` (${topSamples}) converted to database NULL.` : '.') +
-        ` Use IS NOT NULL to exclude them.`,
+      `${nullMarkerCount} rows contain NULL-like text markers` +
+        (topSamples ? ` (${topSamples}).` : '.') +
+        ` They are still stored as text; filter those values explicitly or clean them before CASTing.`,
+    );
+  }
+
+  if (profile.trimmedCount > 0) {
+    warnings.push(
+      `${profile.trimmedCount} values contain leading or trailing whitespace. Clean or trim them before grouping.`,
     );
   }
 

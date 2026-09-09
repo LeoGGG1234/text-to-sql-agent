@@ -66,6 +66,20 @@ export interface CleaningParseFailureSample {
   reason: 'invalid_numeric' | 'invalid_or_ambiguous_date' | 'invalid_boolean';
 }
 
+export type CleaningRemovedRowSample =
+  | {
+      rowId: number;
+      reason: 'duplicate';
+      keptRowId: number;
+      columns: string[];
+      match: 'all_columns' | 'selected_columns';
+    }
+  | {
+      rowId: number;
+      reason: 'missing_value';
+      columns: string[];
+    };
+
 export interface CleaningSummary {
   inputRows: number;
   outputRows: number;
@@ -76,4 +90,6 @@ export interface CleaningSummary {
   parseFailures: number;
   parseFailureSamples: CleaningParseFailureSample[];
   samples: CleaningDiffSample[];
+  /** Optional because cleaning runs created before this field remain readable. */
+  removedRowSamples?: CleaningRemovedRowSample[];
 }

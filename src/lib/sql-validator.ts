@@ -15,7 +15,7 @@
  * query can never return more than MAX_ROWS rows.
  */
 
-import { Parser } from 'node-sql-parser';
+import nodeSqlParser from 'node-sql-parser';
 
 export const MAX_ROWS = 1000;
 
@@ -32,7 +32,7 @@ export interface SqlAccessScope {
   tables: readonly string[];
 }
 
-const parser = new Parser();
+const parser = new nodeSqlParser.Parser();
 const PARSE_OPTS = { database: 'postgresql' } as const;
 
 /**
@@ -78,7 +78,7 @@ const FORBIDDEN_PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /\/\*/, reason: 'SQL block comments are not allowed' },
   { re: /;\s*\S/, reason: 'multiple statements are not allowed' },
   {
-    re: /\b(pg_sleep|pg_read_file|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|dblink|copy|do|query_to_xml|cursor_to_xml|table_to_xml(?:schema)?|schema_to_xml(?:schema)?|database_to_xml(?:schema)?)\b/i,
+    re: /\b(pg_sleep|pg_read_file|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|dblink|copy|do|(?:table|query)_to_xml(?:schema|_and_xmlschema)?|cursor_to_xml(?:schema)?|(?:schema|database)_to_xml(?:schema|_and_xmlschema)?)\b/i,
     reason: 'disallowed function or statement',
   },
   {

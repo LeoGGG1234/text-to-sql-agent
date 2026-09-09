@@ -299,16 +299,31 @@ describe('validateSql — data source table allowlist', () => {
     ).toBe(false);
   });
 
-  it('rejects PostgreSQL functions that execute SQL hidden in string literals', () => {
+  it.each([
+    "query_to_xml('SELECT * FROM userdata.ds_other_user', true, true, '')",
+    "query_to_xmlschema('SELECT * FROM userdata.ds_other_user', true, true, '')",
+    "query_to_xml_and_xmlschema('SELECT * FROM userdata.ds_other_user', true, true, '')",
+    "table_to_xml('userdata.ds_other_user', true, false, '')",
+    "table_to_xmlschema('userdata.ds_other_user', true, false, '')",
+    "table_to_xml_and_xmlschema('userdata.ds_other_user', true, false, '')",
+    "cursor_to_xml('hidden_cursor', 100, true, false, '')",
+    "cursor_to_xmlschema('hidden_cursor', true, false, '')",
+    "schema_to_xml('userdata', true, false, '')",
+    "schema_to_xmlschema('userdata', true, false, '')",
+    "schema_to_xml_and_xmlschema('userdata', true, false, '')",
+    "database_to_xml(true, false, '')",
+    "database_to_xmlschema(true, false, '')",
+    "database_to_xml_and_xmlschema(true, false, '')",
+  ])('rejects PostgreSQL XML mapping function %s', (functionCall) => {
+    expect(validateSql(`SELECT ${functionCall}`, accessScope).valid).toBe(
+      false,
+    );
+  });
+
+  it('rejects a schema-qualified XML mapping function in a nested expression', () => {
     expect(
       validateSql(
-        "SELECT query_to_xml('SELECT * FROM userdata.ds_other_user', true, true, '')",
-        accessScope,
-      ).valid,
-    ).toBe(false);
-    expect(
-      validateSql(
-        "SELECT table_to_xml('userdata.ds_other_user', true, false, '')",
+        "SELECT COALESCE(pg_catalog.query_to_xml_and_xmlschema('SELECT * FROM userdata.ds_other_user', true, true, ''), XMLPARSE(DOCUMENT '<empty/>'))",
         accessScope,
       ).valid,
     ).toBe(false);

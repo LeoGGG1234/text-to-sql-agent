@@ -8,6 +8,7 @@
  */
 
 import type { DiscoveredColumn } from './types';
+import { matchesTextMarker, parseDateValue } from './value-parsers';
 
 const SAMPLE_SIZE = 100;
 
@@ -51,7 +52,7 @@ export function sanitizeIdentifier(raw: string): string {
  * Returns the strongest type that the column could be.
  */
 function detectSemanticType(values: string[]): DiscoveredColumn['semanticType'] {
-  const nonEmpty = values.filter((v) => v !== '' && v != null);
+  const nonEmpty = values.filter((value) => !isNullish(value));
   if (nonEmpty.length === 0) return 'TEXT';
 
   const total = nonEmpty.length;
@@ -61,15 +62,8 @@ function detectSemanticType(values: string[]): DiscoveredColumn['semanticType'] 
   if (numericCount / total >= CONFIDENCE_THRESHOLD) return 'NUMERIC';
 
   // Try DATE: common date patterns, >= 80%.
-  const datePatterns = [
-    /^\d{4}-\d{2}-\d{2}$/,              // 2026-01-15
-    /^\d{1,2}\/\d{1,2}\/\d{4}$/,        // 1/15/2026
-    /^\d{1,2}\/\d{1,2}\/\d{2}$/,        // 1/15/26
-    /^\d{4}\/\d{1,2}\/\d{1,2}$/,        // 2026/1/15
-    /^\d{1,2}-\d{1,2}-\d{4}$/,          // 01-15-2026
-  ];
   const dateCount = nonEmpty.filter((v) =>
-    datePatterns.some((p) => p.test(v.trim())),
+    parseDateValue(v).status !== 'not_date',
   ).length;
   if (dateCount / total >= CONFIDENCE_THRESHOLD) return 'DATE';
 
@@ -120,7 +114,7 @@ export const NULL_LIKE_VALUES = new Set([
 ]);
 
 function isNullish(v: string): boolean {
-  return NULL_LIKE_VALUES.has(v.trim());
+  return matchesTextMarker(v, NULL_LIKE_VALUES);
 }
 
 export function detectColumns(
@@ -142,7 +136,7 @@ export function detectColumns(
     const displayName = header.trim();
     const values = rows.slice(0, SAMPLE_SIZE).map((r) => String(r[colIdx] ?? ''));
     const nonNull = values.filter((v) => !isNullish(v));
-    const nullable = nonNull.length < values.length * 0.5;
+    const nullable = nonNull.length < values.length;
     const semanticType = detectSemanticType(values);
 
     return {

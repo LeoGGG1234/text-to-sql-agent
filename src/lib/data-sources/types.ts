@@ -46,10 +46,18 @@ export type DataSourceConfig = UploadConfig | ExternalConfig;
 // ─── Quality Profile ──────────────────────────────────────────
 
 export interface ColumnProfile {
-  /** Values converted to real NULL by the Q1 NULL-like detector. */
-  nullConvertedCount: number;
-  /** Distribution of original strings that were converted, e.g. {"N/A": 8, "无": 4}. */
-  nullConvertedSamples: Record<string, number>;
+  /** Actual SQL NULL values in the profiled table. */
+  databaseNullCount?: number;
+  /** NULL-like strings that remain stored as text until a recipe changes them. */
+  nullMarkerCount?: number;
+  nullMarkerSamples?: Record<string, number>;
+  /** Calendar-invalid or otherwise invalid values for the semantic type. */
+  invalidCount?: number;
+  /** Date-like values whose day/month or two-digit-year meaning is ambiguous. */
+  ambiguousCount?: number;
+  /** Legacy pre-v2 profile fields, retained so existing history remains readable. */
+  nullConvertedCount?: number;
+  nullConvertedSamples?: Record<string, number>;
   /** Values that don't match the detected semanticType (Q2). */
   nonMatchingCount: number;
   nonMatchingRatio: number; // 0.0–1.0
@@ -57,7 +65,7 @@ export interface ColumnProfile {
   nonMatchingSamples: string[];
   /** Distinct value count in the column. */
   uniqueCount: number;
-  /** How many values had leading/trailing spaces before .trim() (Q4 — already cleaned). */
+  /** How many stored values have leading/trailing whitespace. */
   trimmedCount: number;
   /** Min character length of values in this column. */
   minLength: number;
@@ -75,13 +83,15 @@ export interface TableProfile {
   duplicateRatio: number; // 0.0–1.0
   /** Total columns in this table. */
   totalColumns: number;
-  /** Columns with any quality issue (nullConverted > 0 or nonMatchingRatio > 0.05). */
+  /** Columns with any observed quality issue. */
   columnsWithIssues: number;
 }
 
 export interface QualityProfile {
   columns: Record<string, ColumnProfile>; // keyed by sanitized column name
   table: TableProfile;
+  /** Version 2 distinguishes database NULLs from text markers and invalid values. */
+  version?: 2;
 }
 
 // ─── Schema JSON (stored in data_sources.schema_json) ─────────

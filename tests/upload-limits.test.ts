@@ -12,7 +12,11 @@ describe('upload limits', () => {
 
   it('falls back safely for invalid non-positive values', () => {
     expect(getUploadLimits({ UPLOAD_MAX_FILE_MB: '0', UPLOAD_MAX_ROWS: 'oops' } as NodeJS.ProcessEnv)).toMatchObject({
-      maxFileMb: 80, maxRows: 200_000,
+      maxFileMb: 80, maxRows: 50_000,
     });
+  });
+
+  it('does not advertise uploads larger than cleaning and export can process', () => {
+    expect(getUploadLimits({ UPLOAD_MAX_ROWS: '200000' } as NodeJS.ProcessEnv).maxRows).toBe(50_000);
   });
 });

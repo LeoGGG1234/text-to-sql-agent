@@ -77,13 +77,13 @@ Model-generated SQL is untrusted. The project applies separate controls at the r
 | Tenant SQL | The authorized data source produces a physical-table allowlist | Reading a neighboring table in the shared `userdata` schema |
 | SQL AST | Exactly one `SELECT`; per-operation `tableList` validation; system tables, dangerous functions, comments, multiple statements, and `SELECT INTO` are rejected | Injection and write-capable SQL, including data-modifying CTEs |
 | Resource usage | AST-injected 1,000-row limit plus a 5-second statement timeout | Unbounded result sets and expensive queries |
-| PostgreSQL | Hardened `retail_readonly` / `userdata_readonly` roles with target-table `SELECT` only | An application-validator bypass becoming a write primitive |
+| PostgreSQL | Hardened read-only roles; the shared `userdata_readonly` role is not treated as tenant read isolation | An application-validator bypass becoming a write primitive; tenant reads still depend on the physical-table allowlist |
 
 The validator is implemented in [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts), and execution is implemented in [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts).
 
 ### Adversarial bug found during development
 
-The first validator checked only `stmt.type === 'select'`. PostgreSQL data-modifying CTEs such as `WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t` still present a top-level `SELECT`, so that check was insufficient. The fix validates every operation reported in `tableList`, while the database role remains the final enforcement layer. Regression tests preserve the finding.
+The first validator checked only `stmt.type === 'select'`. PostgreSQL data-modifying CTEs such as `WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t` still present a top-level `SELECT`, so the fix validates every operation reported in `tableList`. A later review found that XML mapping functions such as `query_to_xml_and_xmlschema` can hide a query inside a string argument that the AST table scope cannot see; the full XML mapping family is now rejected, including nested and schema-qualified variants. Regression tests preserve both findings. The database role is the final write boundary, while tenant read isolation still depends on the physical-table allowlist.
 
 ## Bounded self-correction
 
@@ -113,7 +113,7 @@ Users can also upload CSV or XLSX files. Legacy `.xls` is rejected with an expli
 5. grants the runtime role `SELECT` on that table only;
 6. binds the owned data source to a conversation after authorization.
 
-Default upload limits are 80 MB and 200,000 rows and can be configured through environment variables.
+Default upload limits are 80 MB and 50,000 rows. The file-size limit is configurable, while the row limit can only be configured downward; upload, cleaning, and export intentionally share the same 50,000-row ceiling for the current serverless implementation.
 
 ## Data quality and cleaning
 
@@ -130,36 +130,40 @@ Preset or structured recipe
     → before/after quality validation and history
 ```
 
-The current recipe vocabulary covers whitespace/full-width normalization, configurable NULL markers, numeric/currency/percentage parsing, unambiguous year-first date normalization, missing-value handling, and exact or key-based deduplication. Preview/apply is capped at 50,000 rows per run to keep the current serverless implementation bounded. History is recorded; undo is not yet implemented.
+The current recipe vocabulary covers whitespace/full-width normalization, configurable NULL markers, numeric/currency/percentage parsing, calendar-valid unambiguous date normalization, missing-value handling, and exact or key-based deduplication. Ambiguous dates remain unchanged. Preview/apply is capped at 50,000 rows per run to keep the current serverless implementation bounded. History is recorded; undo is not yet implemented.
 
 ## Eval-driven iteration
 
-The eval runner sends 50 bilingual questions through the real `/api/chat` route, extracts the final SQL actually issued by `runSql`, validates it through the production SQL validator, executes generated and reference SQL against the same read-only retail database, and compares result sets. Row order and aliases may differ, but projected column position and values must match. Reports include provider/model, prompt version, commit SHA, dataset SHA-256, latency, tool steps, retry count, token usage when exposed by the stream, and a failure category.
+The eval runner sends 50 bilingual questions through the real `/api/chat` route, extracts the final SQL actually issued by `runSql`, validates it through the production SQL validator, executes generated and reference SQL against the same read-only retail database, and compares result sets. The v2 comparator is exact by default. A case must explicitly opt in to absolute numeric tolerance, additional explanatory columns, joined text, period normalization, or order-insensitive comparison. Reports separately record SQL replay correctness, application tool success, final-answer completeness, and end-to-end task success, together with provider/model, prompt version, commit SHA, source snapshot hash, dataset SHA-256, latency, tool steps, real retry count, token usage, and failure category.
 
-| Prompt | Validity | Exact execution accuracy | Schema adherence |
-|--------|----------|--------------------------|------------------|
-| v2 | 100% | 40% | 100% |
-| v4 (current default) | 100% | 60% | 100% |
+On 2026-09-09, one real 50-case run used DeepSeek `deepseek-v4-flash` with prompt v4. Before the comparison contract was revised, it recorded **74.0% raw strict result match / 74.0% task success**, with 100% SQL validity, replay execution, application tool success, and final-answer completeness. Review of the 13 raw mismatches identified nine representation differences, one reference-SQL entity-granularity error, two ambiguous metrics, and one clear model/business-calculation error.
 
-Failure analysis found repeated result-shape errors: singular questions returning Top-N rows, scalar questions adding breakdowns, and unrequested filters. The v4 prompt improved exact execution accuracy by 20 percentage points in one same-model 20-case snapshot without reducing validity or schema adherence.
+- [50-case raw report](eval/report-deepseek-v4-2026-09-09T08-00-40-981Z.md) / [raw JSON](eval/results-deepseek-v4-2026-09-09T08-00-40-981Z.json)
+- [v2 post-run rescore report](eval/report-deepseek-v4-rescore-2026-09-09T08-20-43-025Z.md) / [rescore JSON](eval/results-deepseek-v4-rescore-2026-09-09T08-20-43-025Z.json)
 
-- [v2 report](eval/report-deepseek-2026-08-15T11-35-33-177Z.md) / [raw JSON](eval/results-deepseek-2026-08-15T11-35-33-177Z.json)
-- [v4 report](eval/report-deepseek-v4-2026-08-15T11-40-50-855Z.md) / [raw JSON](eval/results-deepseek-v4-2026-08-15T11-40-50-855Z.json)
+The reviewed v2 contract rescored the saved SQL offline at **47/48 (97.9%)**, with two ambiguous cases retained as diagnostics and excluded from the primary denominator. Because that contract was created after inspecting this run, the result is explicitly labelled **post-run adjudication** and must not be presented as a prospective frozen-contract baseline.
 
-> The published 40%/60% numbers above remain the historical 20-case snapshot. The expanded 50-case suite requires a new controlled model run before a new score is claimed.
+An earlier same-model, 20-case prompt A/B snapshot recorded 40% for prompt v2 and 60% for prompt v4 under a legacy comparator with roughly 1% global relative numeric tolerance. It remains directional historical evidence, not the current scoring contract:
+
+- [v2 historical report](eval/report-deepseek-2026-08-15T11-35-33-177Z.md) / [raw JSON](eval/results-deepseek-2026-08-15T11-35-33-177Z.json)
+- [v4 historical report](eval/report-deepseek-v4-2026-08-15T11-40-50-855Z.md) / [raw JSON](eval/results-deepseek-v4-2026-08-15T11-40-50-855Z.json)
+
+> 40% / 60% are historical 20-case legacy-comparator snapshots; 74% is the raw strict score from the 50-case run; 97.9% is a post-run offline rescore after reviewing the mismatches. Only a new run performed after freezing the v2 contract can become the prospective baseline.
 
 Run an explicit prompt comparison with:
 
 ```bash
 npm run eval -- --provider deepseek --prompt-variant v2
 npm run eval -- --provider deepseek --prompt-variant v4
+npm run eval -- --validate-only
+npm run eval -- --rescore eval/results-....json
 ```
 
 ## Verification evidence
 
 | Gate | Current evidence |
 |------|------------------|
-| Unit and regression tests | 227 passing tests across 27 files; 61 focus on the SQL validator |
+| Unit and regression tests | 294 passing tests across 31 files |
 | Browser E2E | 3 Playwright flows cover Guest entry, account-upgrade access, and profile → cleaning preview → explicit apply |
 | TypeScript | `tsc --noEmit` passes |
 | ESLint | Non-interactive `eslint . --max-warnings=0` passes |
@@ -242,7 +246,7 @@ npm run guest:cleanup -- --execute
 
 ## Current limitations
 
-- The 50-case eval suite has not yet received a controlled benchmark run; the documented 60% score belongs to the earlier 20-case snapshot.
+- The current 97.9% v2-contract rescore is post-run adjudication, not a prospective baseline. A new controlled 50-case run is required for that claim.
 - The eval harness creates application conversations and does not yet provide deterministic cleanup for a dedicated eval identity.
 - Cleaning is bounded to 50,000 rows per run and keeps history but does not yet provide one-click undo.
 - Legacy `.xls` files must be saved as `.xlsx` or CSV before upload.

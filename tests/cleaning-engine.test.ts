@@ -45,7 +45,115 @@ describe('deterministic cleaning engine', () => {
       { _row_id: 2, name: 'A', amount: null, date: null },
     ], table, { name: 'dedupe', steps: [{ type: 'drop_duplicates' }] });
     expect(result.rows.map((row) => row._row_id)).toEqual([1]);
-    expect(result.summary).toMatchObject({ removedRows: 1, affectedRows: 1 });
+    expect(result.summary).toMatchObject({
+      removedRows: 1,
+      affectedRows: 1,
+      removedRowSamples: [{
+        rowId: 2,
+        reason: 'duplicate',
+        keptRowId: 1,
+        columns: ['name', 'amount', 'date', 'priority'],
+        match: 'all_columns',
+      }],
+    });
+  });
+
+  it('preserves distinct integers beyond JavaScript safe integer range', () => {
+    const result = executeCleaningRecipe([
+      { _row_id: 1, name: 'A', amount: '9007199254740992', date: null, priority: null },
+      { _row_id: 2, name: 'A', amount: '9007199254740993', date: null, priority: null },
+    ], table, buildPresetRecipe(table, 'standard'));
+
+    expect(result.rows.map((row) => row.amount)).toEqual([
+      '9007199254740992',
+      '9007199254740993',
+    ]);
+    expect(result.summary).toMatchObject({
+      outputRows: 2,
+      removedRows: 0,
+      affectedCells: 0,
+      parseFailures: 0,
+    });
+  });
+
+  it('preserves formatting of already-valid plain numeric text', () => {
+    const result = executeCleaningRecipe([
+      { _row_id: 1, name: 'A', amount: '00123', date: null, priority: null },
+      { _row_id: 2, name: 'B', amount: '1.2300', date: null, priority: null },
+    ], table, {
+      name: 'numeric format preservation',
+      steps: [{
+        type: 'normalize_numeric',
+        columns: ['amount'],
+        percentageMode: 'decimal',
+        onError: 'keep_original',
+      }],
+    });
+
+    expect(result.rows.map((row) => row.amount)).toEqual(['00123', '1.2300']);
+    expect(result.summary.affectedCells).toBe(0);
+  });
+
+  it('normalizes grouped and percentage decimals without losing precision', () => {
+    const result = executeCleaningRecipe([
+      {
+        _row_id: 1,
+        name: 'A',
+        amount: '9,007,199,254,740,993',
+        date: null,
+        priority: null,
+      },
+      {
+        _row_id: 2,
+        name: 'B',
+        amount: '12.34567890123456789%',
+        date: null,
+        priority: null,
+      },
+      { _row_id: 3, name: 'C', amount: '12,34', date: null, priority: null },
+    ], table, {
+      name: 'precise numeric',
+      steps: [{
+        type: 'normalize_numeric',
+        columns: ['amount'],
+        percentageMode: 'decimal',
+        onError: 'keep_original',
+      }],
+    });
+
+    expect(result.rows.map((row) => row.amount)).toEqual([
+      '9007199254740993',
+      '0.1234567890123456789',
+      '12,34',
+    ]);
+    expect(result.summary.parseFailureSamples).toEqual([{
+      rowId: 3,
+      column: 'amount',
+      value: '12,34',
+      reason: 'invalid_numeric',
+    }]);
+  });
+
+  it('reports transformations on rows later removed as duplicates', () => {
+    const result = executeCleaningRecipe([
+      { _row_id: 1, name: 'A', amount: '9,007', date: null, priority: null },
+      { _row_id: 2, name: 'A', amount: '9007', date: null, priority: null },
+    ], table, buildPresetRecipe(table, 'standard'));
+
+    expect(result.rows.map((row) => row._row_id)).toEqual([1]);
+    expect(result.summary).toMatchObject({
+      outputRows: 1,
+      affectedRows: 2,
+      affectedCells: 1,
+      removedRows: 1,
+      samples: [{ rowId: 1, column: 'amount', before: '9,007', after: '9007' }],
+      removedRowSamples: [{
+        rowId: 2,
+        reason: 'duplicate',
+        keptRowId: 1,
+        match: 'all_columns',
+      }],
+    });
   });
 
   it('makes aggressive parse-null behavior explicit in the recipe', () => {
@@ -123,6 +231,35 @@ describe('deterministic cleaning engine', () => {
 
     expect(mean.rows[1].amount).toBe('15');
     expect(median.rows[1].amount).toBe('15');
+  });
+
+  it('computes mean and median fills without floating-point precision loss', () => {
+    const input = [
+      { _row_id: 1, name: 'A', amount: '9007199254740992', date: null },
+      { _row_id: 2, name: 'B', amount: null, date: null },
+      { _row_id: 3, name: 'C', amount: '9007199254740993', date: null },
+    ];
+
+    const mean = executeCleaningRecipe(input, table, {
+      name: 'mean', steps: [{ type: 'fill_missing', column: 'amount', strategy: 'mean' }],
+    });
+    const median = executeCleaningRecipe(input, table, {
+      name: 'median', steps: [{ type: 'fill_missing', column: 'amount', strategy: 'median' }],
+    });
+
+    expect(mean.rows[1].amount).toBe('9007199254740992.5');
+    expect(median.rows[1].amount).toBe('9007199254740992.5');
+  });
+
+  it('requires an explicit policy instead of rounding a repeating mean', () => {
+    expect(() => executeCleaningRecipe([
+      { _row_id: 1, name: 'A', amount: '1', date: null },
+      { _row_id: 2, name: 'B', amount: '2', date: null },
+      { _row_id: 3, name: 'C', amount: '2', date: null },
+      { _row_id: 4, name: 'D', amount: null, date: null },
+    ], table, {
+      name: 'mean', steps: [{ type: 'fill_missing', column: 'amount', strategy: 'mean' }],
+    })).toThrow('Mean fill would require implicit rounding');
   });
 
   it('rejects columns outside the physical table allowlist', () => {

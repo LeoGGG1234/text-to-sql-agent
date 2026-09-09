@@ -41,6 +41,7 @@ export default function Home() {
   // Conversation state
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [newChatKey, setNewChatKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Data source state
@@ -104,8 +105,6 @@ export default function Home() {
     conversationContextRequestRef.current?.abort();
 
     if (!activeId) {
-      setActiveDataSourceId(null);
-      setActiveDataSourceName(null);
       setConversationContextLoading(false);
       return;
     }
@@ -144,7 +143,9 @@ export default function Home() {
 
   const handleNew = () => {
     conversationContextRequestRef.current?.abort();
+    conversationContextRequestRef.current = null;
     setActiveId(null);
+    setNewChatKey((key) => key + 1);
     setSidebarOpen(false);
     setActiveDataSourceId(null);
     setActiveDataSourceName(null);
@@ -152,6 +153,10 @@ export default function Home() {
   };
 
   const handleSelect = (id: string) => {
+    if (id === activeId) {
+      setSidebarOpen(false);
+      return;
+    }
     conversationContextRequestRef.current?.abort();
     setActiveDataSourceId(undefined);
     setActiveDataSourceName(null);
@@ -164,7 +169,7 @@ export default function Home() {
     try {
       const res = await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
       if (res.ok) {
-        if (activeId === id) setActiveId(null);
+        if (activeId === id) handleNew();
         setConversations((prev) => prev.filter((c) => c.id !== id));
       }
     } catch (err) {
@@ -201,6 +206,21 @@ export default function Home() {
 
     setActiveDataSourceId(newId);
     setActiveDataSourceName(newId ? name : null);
+  };
+
+  const handleAnalyzeDataSource = (dsId: string, name: string) => {
+    // Start from a clean conversation so messages and tool results from a
+    // previously selected data source cannot influence this analysis.
+    conversationContextRequestRef.current?.abort();
+    conversationContextRequestRef.current = null;
+    setActiveId(null);
+    setNewChatKey((key) => key + 1);
+    setActiveDataSourceId(dsId);
+    setActiveDataSourceName(name);
+    setConversationContextLoading(false);
+    setSidebarOpen(false);
+    setDsPanelOpen(false);
+    setDtPanelOpen(false);
   };
 
   const handleLogout = async () => {
@@ -249,6 +269,7 @@ export default function Home() {
         open={dtPanelOpen}
         onClose={() => setDtPanelOpen(false)}
         dataSourceId={dtDataSourceId}
+        onAnalyze={handleAnalyzeDataSource}
       />
 
       {/* Desktop sidebar */}
@@ -327,9 +348,10 @@ export default function Home() {
         {/* Chat area */}
         <div className="flex-1 overflow-hidden">
           <ChatArea
-            key={activeId ?? 'new'}
+            key={activeId ?? `new-${newChatKey}`}
             conversationId={activeId}
             dataSourceId={activeDataSourceId}
+            dataSourceName={activeDataSourceName}
             conversationContextLoading={conversationContextLoading}
             onConversationCreated={handleConversationCreated}
           />

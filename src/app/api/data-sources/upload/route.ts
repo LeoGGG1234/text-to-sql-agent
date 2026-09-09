@@ -55,12 +55,13 @@ function decodeBuffer(buf: ArrayBuffer, encoding?: string): string {
  *   parse → sanitize → CREATE TABLE (all TEXT) → batch INSERT
  *   → assemble schema_json in memory → INSERT INTO data_sources → COMMIT
  *
- * Limits: 80 MB, 200k rows, 5 req/min per user (configurable via env vars).
+ * Limits: 80 MB, 50k rows, 5 req/min per user. The file limit is configurable;
+ * the row limit can be configured downward from the interactive hard cap.
  */
 
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-helpers';
-import { detectColumns, NULL_LIKE_VALUES, normalizeFullWidth } from '@/lib/data-sources/type-detector';
+import { detectColumns, normalizeFullWidth } from '@/lib/data-sources/type-detector';
 import type { DiscoveredTable, SchemaJson, UploadConfig, QualityProfile } from '@/lib/data-sources/types';
 import { analyzeQuality } from '@/lib/data-sources/quality-analyzer';
 import { USERDATA_SCHEMA } from '@/lib/data-sources/userdata-security';
@@ -193,30 +194,26 @@ export async function POST(req: Request) {
     );
   }
 
-  // ── Step 0: Normalize full-width characters to half-width ──
-  // Converts full-width digits/letters/punctuation to half-width.
-  // This ensures semantic type detection correctly identifies
-  // numbers/dates written with full-width characters.
-  for (let ri = 0; ri < rows.length; ri++) {
-    for (let ci = 0; ci < headers.length; ci++) {
-      rows[ri][ci] = normalizeFullWidth(rows[ri][ci] ?? '');
-    }
-  }
-
-  // ── Step 1: Pre-clean — count whitespace then trim every cell ──
+  // Preserve parsed cell text exactly for storage and profiling. A normalized
+  // copy is used only to infer semantic intent; user-visible transformations
+  // belong to an explicit cleaning recipe and preview.
   const whitespaceCounts: number[] = new Array(headers.length).fill(0);
   for (let ci = 0; ci < headers.length; ci++) {
     let count = 0;
     for (let ri = 0; ri < rows.length; ri++) {
       const raw = rows[ri][ci] ?? '';
       if (raw !== raw.trim()) count++;
-      rows[ri][ci] = raw.trim();
     }
     whitespaceCounts[ci] = count;
   }
+  const inferenceRows = rows.map((row) =>
+    headers.map((_header, columnIndex) =>
+      normalizeFullWidth(row[columnIndex] ?? '').trim(),
+    ),
+  );
 
-  // ── Step 2: Semantic type detection (on trimmed data) ──
-  const columns = detectColumns(headers, rows);
+  // ── Step 1: Semantic type detection (non-persistent normalized view) ──
+  const columns = detectColumns(headers, inferenceRows);
 
   // Check for duplicate sanitized column names.
   const seen = new Set<string>();
@@ -230,7 +227,7 @@ export async function POST(req: Request) {
     seen.add(col.name);
   }
 
-  // ── Step 3: Full-scan quality analysis ──
+  // ── Step 2: Full-scan quality analysis of the stored values ──
   const qualityProfile: QualityProfile = analyzeQuality(
     headers,
     rows,
@@ -278,8 +275,7 @@ export async function POST(req: Request) {
         const values: Array<string | null> = [];
         const placeholders = batch.map((row) => {
           const tuple = columns.map((_column, columnIndex) => {
-            const value = (row[columnIndex] ?? '').trim();
-            values.push(NULL_LIKE_VALUES.has(value) ? null : value);
+            values.push(row[columnIndex] ?? '');
             return `$${values.length}`;
           });
           return `(${tuple.join(', ')})`;
@@ -342,8 +338,11 @@ export async function POST(req: Request) {
       semanticType: c.semanticType,
     })),
     quality: {
-      nullConverted: Object.entries(qualityProfile.columns).reduce(
-        (sum, [, cp]) => sum + cp.nullConvertedCount, 0,
+      databaseNulls: Object.values(qualityProfile.columns).reduce(
+        (sum, profile) => sum + (profile.databaseNullCount ?? 0), 0,
+      ),
+      nullMarkers: Object.values(qualityProfile.columns).reduce(
+        (sum, profile) => sum + (profile.nullMarkerCount ?? 0), 0,
       ),
       columnsWithIssues: qualityProfile.table.columnsWithIssues,
       duplicateRows: qualityProfile.table.duplicateRowCount,
