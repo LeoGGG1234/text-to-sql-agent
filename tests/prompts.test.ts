@@ -25,6 +25,8 @@ describe('system prompt recovery rules', () => {
     expect(prompt).toContain('use at most one');
     expect(prompt).toContain('follow-up detail query');
     expect(prompt).toContain('Do not run optional value');
+    expect(prompt).toContain('exact resultId from runSql');
+    expect(prompt).toContain('Never copy, rewrite, aggregate, or invent chart data');
     expect(prompt).toContain('dirty rows');
     expect(prompt).toContain('plus clean rows equals total rows');
   });

@@ -17,6 +17,10 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import { validateAndExecute, type ExecOptions } from '@/lib/sql-executor';
+import {
+  createQueryResultStore,
+  type QueryResultStore,
+} from './query-result-store';
 
 const MAX_ATTEMPTS = 3;
 
@@ -27,7 +31,10 @@ const MAX_ATTEMPTS = 3;
  *
  * @param execOptions — Optional connection string / search path for user-uploaded data sources.
  */
-export function makeRunSql(execOptions?: ExecOptions) {
+export function makeRunSql(
+  execOptions?: ExecOptions,
+  resultStore: QueryResultStore = createQueryResultStore(),
+) {
   let consecutiveFailures = 0;
 
   return tool({
@@ -36,7 +43,8 @@ export function makeRunSql(execOptions?: ExecOptions) {
       'and return the resulting rows. Use standard PostgreSQL syntax ' +
       'and the exact table/column names from the schema. The query is validated ' +
       'for safety (SELECT only) and capped at 1000 rows. If it fails, read the ' +
-      'returned error and code, fix your SQL, and try again.',
+      'returned error and code, fix your SQL, and try again. A successful result ' +
+      'includes a resultId that renderChart can reference within this request.',
 
     parameters: z.object({
       sql: z
@@ -83,15 +91,23 @@ export function makeRunSql(execOptions?: ExecOptions) {
       }
 
       consecutiveFailures = 0;
+      const visibleRows = result.rows.slice(0, 100);
+      const snapshot = resultStore.save({
+        rowCount: result.rowCount,
+        columns: result.columns,
+        rows: visibleRows,
+        truncated: result.truncated,
+      });
 
       return {
         success: true,
+        resultId: snapshot.resultId,
         sql,
         rowCount: result.rowCount,
         columns: result.columns,
         truncated: result.truncated,
         durationMs: result.durationMs,
-        rows: result.rows.slice(0, 100),
+        rows: visibleRows,
         rowsOmitted: Math.max(0, result.rowCount - 100),
       };
     },

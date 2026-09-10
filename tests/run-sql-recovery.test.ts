@@ -9,6 +9,7 @@ vi.mock('@/lib/sql-executor', () => ({
 }));
 
 import { makeRunSql } from '../src/tools/run-sql';
+import { createQueryResultStore } from '../src/tools/query-result-store';
 
 async function executeSql(
   runSql: ReturnType<typeof makeRunSql>,
@@ -98,6 +99,36 @@ describe('runSql recovery feedback', () => {
         success: false,
         attempt: 1,
         attemptsRemaining: 2,
+      }),
+    );
+  });
+
+  it('registers successful visible rows under the returned result id', async () => {
+    mocks.validateAndExecute.mockResolvedValue({
+      success: true,
+      rowCount: 2,
+      columns: ['region', 'revenue'],
+      truncated: false,
+      durationMs: 1,
+      rows: [
+        { region: 'East', revenue: '12.50' },
+        { region: 'West', revenue: '9.25' },
+      ],
+    });
+    const store = createQueryResultStore();
+    const runSql = makeRunSql(undefined, store);
+
+    const result = await executeSql(runSql, 'SELECT region, revenue FROM example');
+
+    expect(result).toEqual(expect.objectContaining({ resultId: 'query_1' }));
+    expect(store.get('query_1')).toEqual(
+      expect.objectContaining({
+        rowCount: 2,
+        columns: ['region', 'revenue'],
+        rows: [
+          { region: 'East', revenue: '12.50' },
+          { region: 'West', revenue: '9.25' },
+        ],
       }),
     );
   });

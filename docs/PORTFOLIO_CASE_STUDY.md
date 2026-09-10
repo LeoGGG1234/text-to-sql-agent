@@ -18,7 +18,7 @@ This project therefore treats every generated query as untrusted input and optim
 4. The model receives only the selected schema and calls `runSql`.
 5. The SQL is parsed, allowlisted, limited, and executed with a read-only role and timeout.
 6. Structured errors are returned to the model for bounded self-correction.
-7. The UI streams the answer, SQL tool trace, table, and optional chart.
+7. For an optional chart, the model selects a `runSql` result id and columns; the server resolves the real rows and constructs the chart spec before the UI renders it.
 
 ## 3. Security design
 
@@ -37,6 +37,8 @@ The key design choice is defense in depth: application ownership checks decide *
 ## 4. Agent reliability
 
 `runSql` returns structured error codes such as `UNKNOWN_COLUMN`, `SYNTAX_ERROR`, `TIMEOUT`, and `VALIDATION_ERROR`. The system prompt maps each code to a bounded recovery action, while successful calls reset the consecutive-failure budget. This prevents both premature termination and infinite retry loops.
+
+Successful SQL calls are also registered under request-local result ids. `renderChart` accepts only a result id and existing label/value columns; it cannot accept model-authored chart points. Oversized, truncated, missing-column, and non-numeric inputs fail explicitly instead of producing a plausible-looking partial chart.
 
 A real uploaded-table incident exposed a second reliability issue: overlapping dirty-data categories were added together, producing an impossible headline total. The prompt now requires a deduplicated affected-row count and reconciliation of `dirty + clean = total` before answering.
 

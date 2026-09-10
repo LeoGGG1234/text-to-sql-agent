@@ -49,7 +49,31 @@ const TOOLTIP_LABEL_STYLE = { color: '#a1a1aa', fontWeight: 500 };
 const TOOLTIP_ITEM_STYLE = { color: '#e4e4e7' };
 
 export function ChartCard({ result }: { result: unknown }) {
-  const spec = (result as { chartSpec?: ChartSpec })?.chartSpec;
+  const payload = result as {
+    success?: boolean;
+    code?: string;
+    error?: string;
+    sourceResultId?: string;
+    sourceRowCount?: number;
+    labelColumn?: string;
+    valueColumn?: string;
+    chartSpec?: ChartSpec;
+  };
+
+  if (payload?.success === false) {
+    return (
+      <div className="mt-2 rounded-lg bg-amber-950/20 border border-amber-900/40 overflow-hidden">
+        <div className="px-3 py-1.5 text-xs text-amber-400 font-mono border-b border-amber-900/30">
+          {payload.code ?? 'CHART_ERROR'}
+        </div>
+        <div className="px-3 py-2 text-xs text-amber-200/80">
+          {payload.error ?? '图表未生成'}
+        </div>
+      </div>
+    );
+  }
+
+  const spec = payload?.chartSpec;
 
   if (!spec || !Array.isArray(spec.data) || spec.data.length === 0) {
     return (
@@ -67,6 +91,17 @@ export function ChartCard({ result }: { result: unknown }) {
           {renderChart(spec)}
         </ResponsiveContainer>
       </div>
+      {payload.sourceResultId && (
+        <div className="pt-2 mt-2 border-t border-zinc-800 text-[11px] text-zinc-600">
+          Source: {payload.sourceResultId}
+          {payload.labelColumn && payload.valueColumn
+            ? ` · ${payload.labelColumn} → ${payload.valueColumn}`
+            : ''}
+          {typeof payload.sourceRowCount === 'number'
+            ? ` · ${payload.sourceRowCount} rows`
+            : ''}
+        </div>
+      )}
     </div>
   );
 }

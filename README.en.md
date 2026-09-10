@@ -32,7 +32,7 @@ The UI exposes the SQL tool trace, result table, explanation, and chart. Guests,
 - **Bounded self-correction** — structured error codes guide schema lookup and SQL rewriting without infinite retry loops.
 - **User-owned data** — CSV/XLSX upload, type inference, data-quality analysis, paginated preview, and conversation-level data-source binding.
 - **Deterministic cleaning policies** — inspectable recipes, conservative/standard/aggressive presets, full-table dry runs, before/after samples, explicit apply, revision-conflict protection, post-clean validation, and run history.
-- **Automatic visualization** — bar, line, and pie charts rendered from tool results with Recharts.
+- **Traceable visualization** — the agent selects a chart and result columns, while the server builds bar, line, and pie data only from the referenced SQL result.
 - **Multi-provider routing** — DeepSeek, OpenAI, Anthropic, Gemini, and OpenRouter through the Vercel AI SDK.
 - **Execution-based evals** — generated and reference SQL are executed against the same database and their result sets are compared.
 
@@ -59,7 +59,7 @@ Next.js chat UI (streaming responses + tool traces)
 streamText (maxSteps: 5)
     ├── runSql      → validate and execute one read-only SELECT
     ├── getSchema   → reload tables, columns, and relationships
-    └── renderChart → return a bar / line / pie chart specification
+    └── renderChart → bind a resultId to real SQL rows and build the chart spec
     ↓
 Authorized data source
     ├── Retail demo database (retail_readonly)

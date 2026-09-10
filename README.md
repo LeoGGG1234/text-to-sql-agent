@@ -34,7 +34,7 @@ Agent 会展示实际执行的 SQL、查询结果和图表；每个匿名访客�
 - 🗣️ **自然语言 → SQL**：中英双语提问，自动生成 PostgreSQL 查询
 - 🛡️ **三层 SQL 安全防御**：只读角色 + AST 校验 + 语句超时（详见下）
 - 🔁 **自我纠错**：SQL 出错时，Agent 读取结构化错误码、查 schema、自动重写重试
-- 📊 **自动可视化**：Agent 根据数据自动选择柱状图 / 折线图 / 饼图（Recharts）
+- 📊 **可追溯可视化**：Agent 选择图表和结果列，服务端只从对应 SQL 结果构造柱状图 / 折线图 / 饼图（Recharts）
 - 🔀 **多模型路由**：DeepSeek / OpenAI / Anthropic / Gemini / OpenRouter 运行时切换
 - 📈 **Eval 评测体系**：分别衡量 SQL 结果正确性、应用内工具成功、最终回答完整性与端到端任务成功，而非关键词匹配
 - 🧹 **确定性数据清洗**：结构化 Recipe、三档透明预设、Dry Run Diff、显式确认、并发 revision 防护、清洗后验证与历史记录
@@ -59,7 +59,7 @@ Next.js Chat UI (streaming + 工具卡片)
 streamText (maxSteps: 5)  +  3 Tools
     ├── runSql      → 校验 + 只读执行 SELECT，返回结构化结果/错误
     ├── getSchema   → 返回库结构（供 LLM 自查/纠错）
-    └── renderChart → 输出图表 spec（前端 Recharts 渲染）
+    └── renderChart → 按 resultId 绑定真实 SQL rows，服务端生成图表 spec
     ↓
 已授权数据源
     ├── 零售 Demo (Neon Postgres · retail_readonly)
