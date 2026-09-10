@@ -67,6 +67,8 @@ Raw reports, failed SQL, the post-run adjudication label, and the source-snapsho
 
 The local/CI quality gate runs unit and regression tests, Playwright browser flows, TypeScript, ESLint, and a production build. Security integration tests use a disposable Postgres target because they apply migrations, create roles/tables, transfer ownership, exercise transactional cleaning, and clean up fixtures. Deployment readiness separately verifies the guest migration, data-quality migration, role attributes, schema privileges, and SELECT-only table grants against an explicit target.
 
+The product story is also reproducible without the author's private source files: [`docs/demo-data/dirty-sales-orders.csv`](demo-data/dirty-sales-orders.csv) is a frozen synthetic fixture whose upload profile, Standard cleaning impact, unresolved values, and final status aggregation are asserted by the normal test suite. [`docs/DEMO_SCRIPT.md`](DEMO_SCRIPT.md) uses that same oracle for a 90-second walkthrough, so the recorded result can be checked rather than selected after the fact.
+
 The public staging deployment is available at <https://text-to-sql-agent-staging.vercel.app>.
 
 ## 7. Current limitations

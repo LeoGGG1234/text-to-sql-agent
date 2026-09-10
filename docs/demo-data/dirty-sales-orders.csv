@@ -1,0 +1,17 @@
+order_id,customer_name,region,amount,discount_rate,order_date,is_priority,status,sales_owner,notes
+ORD-001," Alpha  Co ",上海,"￥1,000",15%,2026/9/8,yes,Won,Li Wei,priority account
+ORD-001,Alpha Co,上海,1000,0.15,2026-09-08,true,Won,Li Wei,priority account
+ORD-003,Beta Ltd,北京,2480.5,0.1,2026-09-01,no,Open,Chen Yu,new lead
+ORD-004,Gamma Holdings,深圳,3180,0.08,2026-09-02,true,In Progress,Wang Lin,follow up next week
+ORD-005,Delta Retail,广州,890,0.05,2026-09-03,false,Lost,Zhao Min,price concern
+ORD-006,Epsilon Labs,杭州,5700,0.2,2026-09-04,Y,Won,Sun Jie,—
+ORD-007,Zeta Foods,成都,2500,12.5%,09/07/2026,N,Open,Liu Xin,ambiguous date needs review
+ORD-008,Eta Logistics,南京,4260,0.12,2026-09-06,1,In Progress,Hu Fang,renewal pending
+ORD-009,Acme Technology,上海市,6200,0.18,2026-09-07,0,Won,Li Wei,possible near-duplicate customer
+ORD-010,Iota Health,苏州,9900,0.22,2026-09-10,true,Won,Wang Lin,renewal
+ORD-011,Lambda Services,重庆,3000,0.09,2026-13-01,yes,In Progress,Sun Jie,invalid month needs review
+ORD-012,Sigma Market,长沙,not-a-number,bad%,2026-09-19,UNKNOWN,Open,Sun Jie,parse failures need review
+ORD-013,Phi Telecom,佛山,4780,0.09,2026-09-22,N/A,In Progress,Li Wei,missing boolean value
+ORD-014," Psi  Consulting ",济南,2750,0.08,2026/9/24,yes,Won,Wang Lin," extra   whitespace inside "
+ORD-015,Shanghai Retail Co,上海,4460,0.1,2026-09-26,Y,Open,Sun Jie,possible near-duplicate customer
+ORD-016,ShangHai Retail Co.,上海市,4490,0.1,2026-09-26,N,Open,Sun Jie,possible near-duplicate customer

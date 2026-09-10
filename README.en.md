@@ -25,6 +25,8 @@ The live demo supports isolated guest sessions with no sign-up required. Try:
 
 The UI exposes the SQL tool trace, result table, explanation, and chart. Guests, conversations, and uploaded data sources are isolated by ownership checks.
 
+To reproduce the complete upload → profile → clean → analyze story, use the repository's [frozen synthetic fixture](docs/demo-data/dirty-sales-orders.csv), its [executable oracle](docs/demo-data/README.md), and the [90-second demo script](docs/DEMO_SCRIPT.md).
+
 ## Highlights
 
 - **Natural language to PostgreSQL** — bilingual business questions, schema-aware SQL generation, execution, and explanation.
@@ -163,12 +165,12 @@ npm run eval -- --rescore eval/results-....json
 
 | Gate | Current evidence |
 |------|------------------|
-| Unit and regression tests | 294 passing tests across 31 files |
+| Unit and regression tests | 300+ passing tests, including the frozen demo fixture's cleaning and analysis oracle |
 | Browser E2E | 3 Playwright flows cover Guest entry, account-upgrade access, and profile → cleaning preview → explicit apply |
 | TypeScript | `tsc --noEmit` passes |
 | ESLint | Non-interactive `eslint . --max-warnings=0` passes |
 | Production build | Next.js production build passes |
-| Security integration | Last published run: [2/2 passing in GitHub Actions](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31883750479); the expanded 3-case suite will be authoritative after the next CI run |
+| Security integration | [3/3 passing in GitHub Actions](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/34440703730): real Guest/ownership transfer, physical-table allowlisting, and transactional cleaning |
 | Deployment readiness | Guest migration, role attributes, schema privileges, and SELECT-only table grants pass against staging |
 
 ## Run locally

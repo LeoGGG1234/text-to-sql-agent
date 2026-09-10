@@ -27,6 +27,8 @@
 
 Agent 会展示实际执行的 SQL、查询结果和图表；每个匿名访客、会话和上传数据源都经过 ownership 校验与租户隔离。
 
+要复现完整的上传 → 画像 → 清洗 → 分析流程，可使用仓库内的[固定合成数据](docs/demo-data/dirty-sales-orders.csv)和[可执行预期结果](docs/demo-data/README.md)，再按 [90 秒演示脚本](docs/DEMO_SCRIPT.md)操作。
+
 ---
 
 ## ✨ 功能
@@ -76,7 +78,7 @@ LLM 生成的 SQL 默认不可信。本项目用**三层纵深防御**约束其�
 | **2. AST 校验** | `node-sql-parser` 解析成 AST：必须是单条 `SELECT`，且**逐操作校验 `tableList`**（防数据修改 CTE 绕过），拒绝多语句/注释/`SELECT INTO`/系统表/危险函数，并强制注入 `LIMIT 1000` | 注入、写操作（含 CTE 内写）、数据泄露、拖库 |
 | **3. 语句超时** | 角色级 `statement_timeout = 5s` + JS 侧超时兜底 | 笛卡尔积、慢查询拖垮数据库 |
 
-校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)。仓库当前共有 **294 个单元/回归测试**，其中 **75 个**聚焦 SQL validator（写操作/DDL/注入/多语句/数据修改 CTE、XML 映射函数绕过与 LIMIT 边界等）。另有 3 个连接一次性 Postgres 的安全集成测试，验证 Guest/ownership transfer、物理表 allowlist 与清洗事务。
+校验逻辑在 [`src/lib/sql-validator.ts`](src/lib/sql-validator.ts)，执行在 [`src/lib/sql-executor.ts`](src/lib/sql-executor.ts)。仓库当前有 **300+ 个单元/回归测试**，其中 **75 个**聚焦 SQL validator（写操作/DDL/注入/多语句/数据修改 CTE、XML 映射函数绕过与 LIMIT 边界等）。另有 3 个连接一次性 Postgres 的安全集成测试，验证 Guest/ownership transfer、物理表 allowlist 与清洗事务。
 
 > **真实的对抗性发现**：最初的校验只判断 `stmt.type === 'select'`，但 PostgreSQL 的数据修改 CTE（`WITH t AS (UPDATE ... RETURNING *) SELECT * FROM t`）顶层仍报告为 `select`，可绕过该检查；修复方式是逐一校验 `tableList` 中每个操作。后续审查又发现 `query_to_xml_and_xmlschema` 等 XML 映射函数可把查询藏入字符串参数，使 AST 看不到被访问表；当前已拒绝完整 XML 映射函数族并加入嵌套/限定名回归。数据库只读角色仍是写操作的最终防线，但共享角色不能替代租户物理表 allowlist。
 
@@ -173,12 +175,12 @@ Eval 扩展为 50 个中英双语用例，覆盖 simple / aggregation / join / t
 
 | 验证项 | 当前状态 | 说明 |
 |--------|----------|------|
-| Unit / regression tests | 294 passed | 不连接外部数据库 |
+| Unit / regression tests | 300+ passed | 不连接外部数据库；包含固定 Demo fixture 的清洗与分析 oracle |
 | Browser E2E | 3 passed | Guest 入口、匿名升级入口与画像 → 清洗预览 → 显式 Apply |
 | TypeScript | passed | `tsc --noEmit` |
 | ESLint | passed | `eslint . --max-warnings=0`，可在 CI 非交互运行 |
 | Production build | passed | Next.js production build |
-| Security integration | 上次发布证据为 [2/2 passed（GitHub Actions）](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/31883750479) | 扩展后的 3-case suite 加入真实清洗事务，将以下一次 CI 为准 |
+| Security integration | [3/3 passed（GitHub Actions）](https://github.com/LeoGGG1234/text-to-sql-agent/actions/runs/34440703730) | 真实 Guest/ownership transfer、物理表 allowlist 与清洗事务 |
 | Deployment readiness | passed（staging） | 检查 Guest migration、只读角色属性及 userdata schema/table 权限 |
 
 > `eval/` 中保留的 2026-06 报告是早期基线，不代表当前 hardened 版本。运行 `npm run eval` 会生成带时间戳的 JSON 与 Markdown 报告，避免用旧指标包装新实现。可用 `--prompt-variant v2` 或 `--prompt-variant v4` 做显式 A/B。
