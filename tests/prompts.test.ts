@@ -21,6 +21,10 @@ describe('system prompt recovery rules', () => {
     expect(prompt).toContain('deduplicated count of affected rows');
     expect(prompt).toContain('must not be added together');
     expect(prompt).toContain('duplicateRowCount as excess copies');
+    expect(prompt).toContain('prefer one aggregate query');
+    expect(prompt).toContain('use at most one');
+    expect(prompt).toContain('follow-up detail query');
+    expect(prompt).toContain('Do not run optional value');
     expect(prompt).toContain('dirty rows');
     expect(prompt).toContain('plus clean rows equals total rows');
   });

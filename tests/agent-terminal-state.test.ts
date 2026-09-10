@@ -29,6 +29,15 @@ describe('agent terminal state', () => {
     );
   });
 
+  it('does not duplicate a notice already emitted by the stream transform', () => {
+    const streamedText = `\u5df2\u83b7\u53d6 SQL \u7ed3\u679c\u3002${TOOL_LIMIT_NOTICE}`;
+
+    expect(ensureTerminalText(streamedText, 'tool-calls')).toBe(streamedText);
+    expect(
+      ensureTerminalText(streamedText, 'tool-calls').split(TOOL_LIMIT_NOTICE.trim()).length - 1,
+    ).toBe(1);
+  });
+
   it('emits the notice before the final tool-call finish event', async () => {
     const transform = createTerminalNoticeTransform();
     const stream = new ReadableStream({

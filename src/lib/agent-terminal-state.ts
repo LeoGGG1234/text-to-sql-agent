@@ -13,6 +13,7 @@ export function ensureTerminalText(
   finishReason: FinishReason,
 ): string {
   if (finishReason !== 'tool-calls') return text;
+  if (text.includes(TOOL_LIMIT_NOTICE.trim())) return text;
   return `${text.trimEnd()}${TOOL_LIMIT_NOTICE}`;
 }
 
