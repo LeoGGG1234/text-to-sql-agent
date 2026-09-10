@@ -25,6 +25,27 @@ describe('system prompt recovery rules', () => {
     expect(prompt).toContain('plus clean rows equals total rows');
   });
 
+  it('keeps the current table total separate from filtered quality subsets', () => {
+    const prompt = getSystemPrompt('v2', 'example schema');
+
+    expect(prompt).toContain('COUNT(*) without a filter');
+    expect(prompt).toContain('filtered count');
+    expect(prompt).toContain('never');
+    expect(prompt).toContain('relabel it as the table row count');
+    expect(prompt).toContain('answer with the current');
+    expect(prompt).toContain('Report valid/invalid/affected subsets separately');
+  });
+
+  it('does not infer cleaning mutations from read-only query results', () => {
+    const prompt = getSystemPrompt('v2', 'example schema');
+
+    expect(prompt).toContain('Read-only SELECT results describe the current data');
+    expect(prompt).toContain('not its mutation history');
+    expect(prompt).toContain('Never claim');
+    expect(prompt).toContain('rows were removed, repaired, or changed');
+    expect(prompt).toContain('Unresolved or invalid values may remain');
+  });
+
   it('offers an eval variant that matches the requested result granularity', () => {
     const prompt = getSystemPrompt('v4', 'example schema');
 

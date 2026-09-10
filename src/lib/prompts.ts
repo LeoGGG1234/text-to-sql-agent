@@ -60,6 +60,14 @@ function buildSharedRules(schemaText: string): string {
     '  Treat duplicateRowCount as excess copies, not every row in a duplicate group.',
     '- Before answering, reconcile the headline with the breakdown and verify that dirty rows',
     '  plus clean rows equals total rows. If the numbers conflict, correct them before replying.',
+    '- Keep population counts distinct. COUNT(*) without a filter is the current physical table',
+    '  row count. A filtered count is only the number of rows matching that stated filter; never',
+    '  relabel it as the table row count, the post-cleaning row count, or the number of rows retained.',
+    '- Read-only SELECT results describe the current data, not its mutation history. Never claim',
+    '  that rows were removed, repaired, or changed unless the available tool evidence explicitly',
+    '  proves that operation. Unresolved or invalid values may remain inside the current table.',
+    '- When the user asks how many rows a table has "after cleaning", answer with the current',
+    '  COUNT(*) first. Report valid/invalid/affected subsets separately and name each filter.',
   ].join('\n');
 }
 
